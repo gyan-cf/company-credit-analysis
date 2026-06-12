@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["card_type", "summary_title", "strengths", "risks", "key_numbers"],
+  "properties": {
+    "card_type": {
+      "type": "string",
+      "enum": ["CA", "OD", "GST", "BUREAU", "FS", "INDUSTRY", "QUALITATIVE", "BANK"]
+    },
+    "summary_title": {
+      "type": "string"
+    },
+    "summary_subtitle": {
+      "type": "string"
+    },
+    "strengths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "message"],
+        "properties": {
+          "id": {"type": "string"},
+          "message": {"type": "string"},
+          "supporting_metrics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {"type": "string"},
+                "value": {"type": ["string", "number"]},
+                "period": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "message", "severity"],
+        "properties": {
+          "id": {"type": "string"},
+          "message": {"type": "string"},
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "supporting_metrics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {"type": "string"},
+                "value": {"type": ["string", "number"]},
+                "period": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "key_numbers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "value"],
+        "properties": {
+          "label": {"type": "string"},
+          "value": {"type": ["string", "number"]},
+          "unit": {"type": "string"},
+          "trend": {
+            "type": "string",
+            "enum": ["up", "down", "stable"]
+          }
+        }
+      }
+    },
+    "cross_links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "message"],
+        "properties": {
+          "from": {"type": "string"},
+          "to": {"type": "string"},
+          "message": {"type": "string"},
+          "severity": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          }
+        }
+      }
+    }
+  }
+}

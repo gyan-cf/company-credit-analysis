@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["memo"],
+  "properties": {
+    "memo": {
+      "type": "object",
+      "properties": {
+        "executive_summary": {"type": "array", "items": {"type": "string"}},
+        "profitability": {"type": "object"},
+        "leverage": {"type": "object"},
+        "liquidity": {"type": "object"},
+        "cash_conversion": {"type": "object"},
+        "audit_flags": {"type": "array"},
+        "strengths": {"type": "array"},
+        "watchouts": {"type": "array"},
+        "red_flags": {"type": "array"},
+        "underwriter_questions": {"type": "array"}
+      }
+    },
+    "card_view": {"type": "object"}
+  }
+}

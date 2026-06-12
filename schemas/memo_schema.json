@@ -1,0 +1,147 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["memo"],
+  "properties": {
+    "memo": {
+      "type": "object",
+      "required": ["executive_summary", "profile_snapshot", "strengths", "watchouts", "red_flags", "underwriter_questions"],
+      "properties": {
+        "executive_summary": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "profile_snapshot": {
+          "type": "object",
+          "required": ["period", "vintage_months", "activity", "concentration", "compliance", "governance"],
+          "properties": {
+            "period": {"type": "string"},
+            "vintage_months": {"type": "integer"},
+            "activity": {
+              "type": "object",
+              "properties": {
+                "amct_median": {"type": "number"},
+                "credit_gap_median_days": {"type": "number"},
+                "adb_median": {"type": "number"},
+                "seasonality": {"type": "string", "enum": ["low", "med", "high"]}
+              }
+            },
+            "concentration": {
+              "type": "object",
+              "properties": {
+                "top3_share_median": {"type": "number"},
+                "hhi_median": {"type": "number"}
+              }
+            },
+            "compliance": {
+              "type": "object",
+              "properties": {
+                "statutory_miss_months_12m": {"type": "integer"},
+                "return_rate_max": {"type": "number"}
+              }
+            },
+            "governance": {
+              "type": "object",
+              "properties": {
+                "related_party_outflow_12m": {"type": "number"},
+                "other_lender_outflow_12m": {"type": "number"}
+              }
+            }
+          }
+        },
+        "strengths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["message", "evidence"],
+            "properties": {
+              "message": {"type": "string"},
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {"type": ["string", "number"]},
+                  "minItems": 3,
+                  "maxItems": 4
+                }
+              }
+            }
+          }
+        },
+        "watchouts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["message", "evidence"],
+            "properties": {
+              "message": {"type": "string"},
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {"type": ["string", "number"]},
+                  "minItems": 3,
+                  "maxItems": 4
+                }
+              }
+            }
+          }
+        },
+        "red_flags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["message", "evidence"],
+            "properties": {
+              "message": {"type": "string"},
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {"type": ["string", "number"]},
+                  "minItems": 3,
+                  "maxItems": 4
+                }
+              }
+            }
+          }
+        },
+        "underwriter_questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["q", "reason", "evidence", "ask_for"],
+            "properties": {
+              "q": {"type": "string"},
+              "reason": {"type": "string"},
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {"type": ["string", "number"]},
+                  "minItems": 3,
+                  "maxItems": 4
+                }
+              },
+              "ask_for": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            }
+          }
+        },
+        "appendix": {
+          "type": "object",
+          "properties": {
+            "evidence_notes": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "disclaimer": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}
+

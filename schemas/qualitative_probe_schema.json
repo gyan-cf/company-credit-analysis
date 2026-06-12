@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "probes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "question", "priority", "rationale"],
+        "properties": {
+          "id": {"type": "string"},
+          "question": {"type": "string"},
+          "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+          "rationale": {"type": "string"},
+          "theme": {"type": "string"},
+          "documents_requested": {"type": "array", "items": {"type": "string"}},
+          "evidence_links": {"type": "array"},
+          "management_meeting": {"type": "boolean"}
+        }
+      }
+    },
+    "card_view": {"type": "object"}
+  }
+}

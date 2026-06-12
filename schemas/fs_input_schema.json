@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["meta", "periods"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["company_name", "currency"],
+      "properties": {
+        "company_name": {"type": "string"},
+        "cin": {"type": "string"},
+        "pan": {"type": "string"},
+        "industry_code": {"type": "string"},
+        "industry_hint": {"type": "string"},
+        "currency": {"type": "string"},
+        "auditor": {"type": "string"},
+        "consolidated": {"type": "boolean"},
+        "period_start": {"type": "string"},
+        "period_end": {"type": "string"}
+      }
+    },
+    "periods": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["fy"],
+        "properties": {
+          "fy": {"type": "string"},
+          "pnl": {"type": "object"},
+          "balance_sheet": {"type": "object"},
+          "cash_flow": {"type": "object"}
+        }
+      }
+    },
+    "ratios": {
+      "type": "object",
+      "properties": {
+        "by_fy": {"type": "object"},
+        "trends": {"type": "object"}
+      }
+    },
+    "review_flags": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "field": {"type": "string"},
+          "fy": {"type": "string"},
+          "confidence": {"type": "number"},
+          "message": {"type": "string"}
+        }
+      }
+    }
+  }
+}

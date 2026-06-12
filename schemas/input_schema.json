@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["meta", "monthly", "aggregates"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["borrower_name", "vintage_months", "industry_hint", "bank_name", "period_start", "period_end", "adb_floor_inr"],
+      "properties": {
+        "borrower_name": {"type": "string"},
+        "vintage_months": {"type": "integer", "minimum": 0},
+        "industry_hint": {"type": "string"},
+        "location": {"type": "string"},
+        "bank_name": {"type": "string"},
+        "period_start": {"type": "string", "pattern": "^\\d{4}-\\d{2}$"},
+        "period_end": {"type": "string", "pattern": "^\\d{4}-\\d{2}$"},
+        "adb_floor_inr": {"type": "number", "minimum": 0}
+      }
+    },
+    "monthly": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["month"],
+        "properties": {
+          "month": {"type": "string", "pattern": "^\\d{4}-\\d{2}$"},
+          "adb_m": {"type": "number"},
+          "min_balance_m": {"type": "number"},
+          "pct_days_below_floor_m": {"type": "number", "minimum": 0, "maximum": 100},
+          "balance_vol_m": {"type": "number", "minimum": 0},
+          "amct_m": {"type": "number", "minimum": 0},
+          "credit_txn_count_m": {"type": "integer", "minimum": 0},
+          "median_credit_gap_days_m": {"type": "number", "minimum": 0},
+          "end_month_sprinting_idx_m": {"type": "number", "minimum": 0, "maximum": 100},
+          "burstiness_score_m": {"type": "number", "minimum": 0, "maximum": 1},
+          "seasonality_index_m": {"type": "number", "minimum": 0},
+          "charges_fees_share_m": {"type": "number", "minimum": 0, "maximum": 100},
+          "credit_return_rate_m": {"type": "number", "minimum": 0, "maximum": 100},
+          "debit_return_rate_m": {"type": "number", "minimum": 0, "maximum": 100},
+          "statutory_txn_presence_m": {"type": "integer", "minimum": 0},
+          "top3_credit_share_m": {"type": "number", "minimum": 0, "maximum": 100},
+          "credit_hhi_m": {"type": "number", "minimum": 0, "maximum": 10000},
+          "cash_outflow_share_m": {"type": "number", "minimum": 0, "maximum": 100},
+          "utilization_pct_m": {"type": "number", "minimum": 0, "maximum": 100},
+          "days_over_limit_m": {"type": "integer", "minimum": 0},
+          "interest_coverage_90d": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "aggregates": {
+      "type": "object",
+      "properties": {
+        "inactivity_gap_max_90d": {"type": "integer", "minimum": 0},
+        "top10_counterparty_churn_12m": {"type": "number", "minimum": 0, "maximum": 100},
+        "platform_settlement_share_12m": {"type": "number", "minimum": 0, "maximum": 100},
+        "owner_related_outflow_share_12m": {"type": "number", "minimum": 0, "maximum": 100},
+        "other_lender_payment_share_12m": {"type": "number", "minimum": 0, "maximum": 100},
+        "closing_balance_slope_12m": {"type": "number"},
+        "seasonality_index_m": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}
+

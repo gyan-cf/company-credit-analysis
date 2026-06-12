@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "industry_code": {"type": "string"},
+    "sector_name": {"type": "string"},
+    "cyclicality": {"type": "string", "enum": ["low", "medium", "high"]},
+    "typical_margins": {"type": "object"},
+    "leverage_tolerance": {"type": "object"},
+    "key_risks": {"type": "array", "items": {"type": "string"}},
+    "policy_overlays": {"type": "array", "items": {"type": "string"}},
+    "benchmarks": {"type": "object"}
+  }
+}
