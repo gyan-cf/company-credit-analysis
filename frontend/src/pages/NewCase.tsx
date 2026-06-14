@@ -18,7 +18,7 @@ export default function NewCase() {
     setLoading(true)
     try {
       const c = await createCase(form)
-      nav(`/cases/${c.case_id}`)
+      nav(`/cases/${c.case_id}/intake`)
     } catch (err) {
       alert(String(err))
     } finally {

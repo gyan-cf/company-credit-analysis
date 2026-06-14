@@ -203,7 +203,13 @@ def _narrative_filename(section: NarrativeSection) -> Tuple[str, str]:
     """Return (folder, basename) for a narrative section."""
     if section.note_no is not None:
         slug = _slug(section.title)
-        return "notes", f"note_{section.note_no:02d}_{slug}.md"
+        # Sub-numbered notes (e.g. "2.1") come through as strings or floats —
+        # only `int` accepts the :02d format spec, so dotify everything else.
+        try:
+            no_token = f"{int(section.note_no):02d}"
+        except (TypeError, ValueError):
+            no_token = str(section.note_no).replace(".", "_")
+        return "notes", f"note_{no_token}_{slug}.md"
     # Non-numbered: directors_statement, auditor_report, other
     return "narrative", f"{section.kind}.md"
 

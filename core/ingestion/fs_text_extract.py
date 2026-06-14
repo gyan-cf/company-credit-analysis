@@ -456,13 +456,109 @@ def _detect_columns(block_lines: List[str]) -> List[ColumnHeader]:
 
 # ---- Main parser ---------------------------------------------------------------
 
+# Characters that can appear in an SG entity name. Allows brackets
+# (`(Singapore)`), slashes, ampersands; never lower-case (every SG entity name
+# on z124 covers is upper-cased).
+_NAME_CHARS = r"A-Z0-9 &'.,\-()/"
+_NAME_LINE_RE = re.compile(rf"^[{_NAME_CHARS}]+$")
+_HEX_HASH_RE = re.compile(r"^[0-9a-f]{16,}$")
+_ENTITY_SUFFIX_RE = re.compile(
+    r"\b("
+    r"PTE\.?\s*LTD\.?|PRIVATE\s+LIMITED|LIMITED|LTD\.?|"
+    r"LIMITED\s+LIABILITY\s+PARTNERSHIP|LLP|"
+    r"PUBLIC\s+COMPANY\s+LIMITED|PLC|"
+    r"INC\.?|INCORPORATED|"
+    r"HOLDINGS|GROUP"
+    r")\b",
+    re.IGNORECASE,
+)
+_COVER_ANCHOR_RE = re.compile(
+    r"^("
+    r"Registration\s+Number|"
+    r"UNAUDITED\s+FINANCIAL\s+STATEMENTS|"
+    r"AUDITED\s+FINANCIAL\s+STATEMENTS|"
+    r"FINANCIAL\s+STATEMENTS|"
+    r"Year\s+ended|"
+    r"For\s+the\s+(?:financial\s+)?year\s+ended"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _extract_entity_name_from_cover(text: str) -> Optional[str]:
+    """
+    Extract the entity name from a z124 / UFS cover page.
+
+    The XBRL render lays the cover out as:
+
+        <ENTITY NAME LINE 1>
+        <ENTITY NAME LINE 2 — often "(JURISDICTION) PTE. LTD.">
+        Registration Number: <UEN>
+        FINANCIAL STATEMENTS
+        Year ended <date>
+
+    Strategy:
+      1. Anchor-walk: find the first cover anchor line (Registration Number /
+         FINANCIAL STATEMENTS / Year ended). Walk back over up to 4 lines
+         collecting consecutive all-caps name-like lines; stitch them together
+         and verify the result has a known entity suffix.
+      2. Forward scan: if anchor-walk fails (anchor missing), find the first
+         contiguous run of name-like lines that ends with an entity suffix.
+
+    Both paths skip hex hashes (pdfplumber sometimes lifts a hidden hash from
+    the page header) and page-number lines.
+    """
+    lines = [ln.strip() for ln in text.split("\n")]
+    n = len(lines)
+
+    def _name_candidate(ln: str) -> bool:
+        return bool(ln) and bool(_NAME_LINE_RE.match(ln)) and not _HEX_HASH_RE.match(ln)
+
+    # 1. Anchor-walk backwards from the first cover anchor we see.
+    for i, ln in enumerate(lines[:30]):
+        if not _COVER_ANCHOR_RE.match(ln):
+            continue
+        parts: List[str] = []
+        for j in range(i - 1, max(-1, i - 5), -1):
+            cand = lines[j]
+            if not cand:
+                if parts:
+                    break
+                continue
+            if not _name_candidate(cand):
+                if parts:
+                    break
+                continue
+            parts.insert(0, cand)
+        joined = " ".join(parts).strip()
+        if joined and _ENTITY_SUFFIX_RE.search(joined):
+            return joined
+        # Anchor was present but no name above it (or no suffix). Stop trying
+        # other anchors so we don't latch onto something downstream.
+        break
+
+    # 2. Forward scan as a fallback.
+    for i in range(min(n, 30)):
+        if not _name_candidate(lines[i]):
+            continue
+        parts = []
+        j = i
+        while j < n and j - i < 3 and _name_candidate(lines[j]):
+            parts.append(lines[j])
+            joined = " ".join(parts)
+            if _ENTITY_SUFFIX_RE.search(joined):
+                return joined
+            j += 1
+
+    return None
+
+
 def _detect_meta(full_text: str) -> Dict[str, Any]:
     """Pull entity name, UEN, currency, framework, consolidated flag from the cover."""
     meta: Dict[str, Any] = {"framework": "SFRS", "currency": "SGD", "audited": False, "consolidated": False}
-    # entity name (first line of cover usually contains "(SINGAPORE) PTE. LTD." etc.)
-    m = re.search(r"([A-Z0-9][A-Z0-9 &'.,\-]{3,}PTE\.?\s*LTD\.?)", full_text)
-    if m:
-        meta["entity_name"] = m.group(1).strip()
+    name = _extract_entity_name_from_cover(full_text)
+    if name:
+        meta["entity_name"] = name
     m = re.search(r"Registration Number[:\s]+(\d{8,10}[A-Z])", full_text, re.I)
     if m:
         meta["uen"] = m.group(1)
@@ -600,9 +696,11 @@ def extraction_to_periods(extraction: FSExtraction) -> List[Dict[str, Any]]:
             "fy": c.fy,
             "period_end": c.period_end,
             "currency": extraction.currency,
-            "statements": {"sofp": [], "soci": [], "socf": []},
+            "statements": {"sofp": [], "soci": [], "soce": [], "socf": []},
         }
     for ln in extraction.lines:
+        if ln.statement not in ("sofp", "soci", "soce", "socf"):
+            continue
         for col_id, val in ln.values.items():
             if col_id not in by_period:
                 continue

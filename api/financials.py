@@ -72,6 +72,15 @@ def get_financials_index(case_id: str):
     return JSONResponse(json.loads(idx_path.read_text(encoding="utf-8")))
 
 
+@router.get("/cases/{case_id}/financials/analytics")
+def get_financials_analytics(case_id: str):
+    """Return FS analytics: raw line values, ratios, trends, and review flags."""
+    data = _store.load_features(case_id, "fs_analytics")
+    if not data:
+        raise HTTPException(404, "Financial analytics not generated yet — run analysis first")
+    return JSONResponse(data)
+
+
 @router.get("/cases/{case_id}/sources/{source_id}/manifest")
 def get_source_manifest(case_id: str, source_id: str):
     manifest_path = _source_dir(case_id, source_id) / "manifest.json"

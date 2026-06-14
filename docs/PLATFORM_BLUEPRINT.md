@@ -1,7 +1,36 @@
-# CrediSage — Agentic Company Credit Analysis Platform
-### Functional + Technical Blueprint (v1.1 — Singapore)
+# CrediSage — Agentic Company Credit Analysis Platform with Credit Co-Pilot
+### Functional + Technical Blueprint (v1.2 — Singapore, Phased)
 
-> A working plan to evolve the current `comany-credit-analysis` repo into a production-grade, agentic credit underwriting platform serving both **SMEs** and **Large Corporates** in **Singapore**. The document is split into two halves: (1) what a Singapore credit analyst actually does, and (2) how we build a platform that does it with them.
+> A working plan to evolve the current `comany-credit-analysis` repo into a production-grade, **agentic company-analysis platform with an embedded Credit Co-Pilot**, serving both **SMEs** and **Large Corporates** in **Singapore**. The document is split into three halves: (1) what a Singapore credit analyst actually does, (2) how we build a platform that does it with them, and (3) a phased delivery plan that puts a polished, demonstrable Phase 1 in the analyst's hands first.
+
+### Product positioning (one-liner)
+
+> **CrediSage is the agentic workbench for company credit analysis. Drop in the filings — ingestion, financial spreading, ratio analytics, business and industry intelligence, and a draft credit memo are produced by the platform's agents under the analyst's supervision, with an always-on Credit Co-Pilot to refine every step.**
+
+The analyst is the decision-maker. The platform compresses 3–5 days of grunt work into a 30–60 minute review-and-refine session and produces a committee-ready output with full citations.
+
+---
+
+## 0a. Headline User Journey (10 steps → mapped to platform capabilities)
+
+The product is designed around this analyst journey. Phase 1 delivers steps 1–7 + 10 end-to-end and a focused version of 8 + 9.
+
+| # | Analyst action | Platform capability | Phase |
+|---|---|---|---|
+| 1 | Sign in to the portal | SSO / email login, role-based home (Analyst / Senior / Credit Officer) | 1 |
+| 2 | Create a new entity assessment | New-Case wizard: UEN lookup → ACRA BizFile pre-fill → segment + SSIC capture | 1 |
+| 3 | Ingest last 5 years of financial statements | Drag-and-drop multi-PDF / Excel intake; ACRA-aware classifier auto-routes z124 / C223 / BM42A / UFS / Excel | 1 |
+| 4 | See per-PDF ingestion output on a dashboard | **Document Intelligence dashboard** — one tile per source PDF showing extracted SoFP / SoCI / SoCF tables, notes, audit-status, classifier confidence, page-level previews | 1 |
+| 5 | Edit / annotate ingested data, add notes | Inline cell-level edits with audit trail, "needs review" flags, comment threads anchored to a cell / table / page | 1 |
+| 6 | Approve and lock the import | Source-by-source approval gate; locked-in canonical spread becomes the basis for analysis | 1 |
+| 7 | Generate financial analysis | One-click **Financial Analysis Workbench** — canonical 5-FY spreads, ratios, trend, working-capital, DSCR / coverage, peer-policy thresholds, anomaly detection | 1 |
+| 8 | Generate business insight via web research | **Business Insight Agent** — invoked from the workbench, performs governed web research, returns Director / Executive profiles, news, partnerships, market-research extracts, all cited; analyst accepts or trims findings | 2 (Phase 1: lite — director + executive profile + adverse-media check) |
+| 9 | Industry assessment with peer multiples | **Industry Agent** — SSIC-keyed peer set, financial-ratio benchmarks, industry multiples, sentiment overlay; produces an industry-overlay card | 2 (Phase 1: SSIC + qualitative industry view; multiples in Phase 2) |
+| 10 | Generate analyst-ready credit memo + refine with Co-Pilot | **Credit Memo Workspace** — sectioned memo (Executive Summary → Recommendation) drafted from analytics + agent outputs; analyst edits inline or instructs Co-Pilot ("tighten the executive summary", "stress at -25% revenue", "draft 5 questions for the CFO call"); export to .docx / .pdf with citations resolved | 1 |
+
+The output is the same Credit Information Memorandum exemplified in `docs/CIM_GoImpact_SG_FY22-24.docx` (built end-to-end against the GoImpact filings in `input/financials/` as a live reference for what the platform must produce).
+
+---
 
 ### Regulatory & Data Context — Singapore at a glance
 
@@ -233,19 +262,74 @@ Replace the current single-page tab structure with a workspace shell:
 └──────────┴─────────────────────────────────────────┴───────────────┘
 ```
 
-Key views to add:
+Key views to add. **Phase-1 critical screens are tagged [P1].** Each screen has explicit interaction notes so the front-end build can begin without further translation.
 
-- **Intake / Document checklist** — required-vs-received with status pills; drag-drop upload; per-file parser status.
-- **Document Viewer** — PDF on the left, extracted tables on the right; click a number in any spread → it jumps to the source page with the cell highlighted.
-- **Financial Spread Workbench** — editable canonical BS/P&L/CF grid, multi-year columns, override flags, audit trail.
-- **Ratio & Trend Dashboard** — KPI tiles, sparklines, peer median overlay, policy thresholds, drill-down to formula and inputs.
-- **Cash Flow & DSCR Studio** — debt schedule, projection inputs, DSCR curve, stress sliders (revenue, margin, rate, FX) with live re-compute.
-- **Bank Conduct View** — monthly bars (credits/debits/ADB/EOD), bounces, RBI out-of-order flags, drill into transactions.
-- **Cross-Source Reconciliation** — FS-vs-GST-vs-Bank revenue triangulation table with reconciling items.
-- **Agent Activity Feed** — chronological stream of each agent's output, success/failure, time, tokens.
-- **Memo Editor** — section navigator, rich-text per section, "regenerate" / "tighten" actions, citation pane, version history.
-- **Risk & Recommendation** — score-card breakdown, override panel with justification, recommended structure & covenants.
-- **Co-worker Panel** — persistent right-rail; tool-call trace visible; suggested actions; one-click "insert into memo".
+#### Polished UI/UX — screen-by-screen
+
+**S1. Login & Home — Cases list [P1]**
+- Left navigation: Cases (default), New Case, Settings, Admin.
+- Cases grid as cards (preferred) or table (toggle): company name + UEN badge, segment chip (SME / Corp), current status pill (Intake → Reviewing → Analysed → Memo Draft → Approved), risk-grade chip (MAS 612), assigned analyst avatar, last-updated relative time.
+- Top right: global search ("ACME", "UEN 202037175R"), bell (agent activity), avatar menu.
+- Empty state: "No cases yet — Create your first assessment" with a primary CTA.
+
+**S2. New Case wizard [P1]**
+- Step 1 · **Identity** — UEN field with auto-complete; on selection, pre-fill from ACRA BizFile (entity name, SSIC, status, registered address, directors snapshot). Manual fallback when UEN not available.
+- Step 2 · **Scope** — segment (SME / Corporate), purpose (working-capital, term-loan, refinancing, annual-review), reporting framework auto-detected from ACRA.
+- Step 3 · **Confirm & create** — summary card; click → lands on S3.
+
+**S3. Document Intake & Ingestion Dashboard [P1]**
+- Layout: drag-and-drop zone on top; below it a grid of source-document tiles (one per uploaded file).
+- Each tile shows: filename, classified source type (z124 / C223 / BM42A / UFS / Excel) with confidence pill, detected FY, page count, OCR badge if image-only, extraction status (Queued → Extracting → Ready → Needs Review), thumbnail of page 1.
+- Click a tile → S4 (Per-PDF Review). Bulk action: "Approve all ready".
+- Sidebar: ingestion progress (e.g. "4 of 5 sources extracted"), review-flag count, action button "Run analysis" (locked until all sources approved).
+
+**S4. Per-PDF Review — Document Viewer + Extracted Data side-by-side [P1]**
+- Three-panel layout, full-height: PDF viewer (left, 50%), Extraction panel (right, 40%), Co-Pilot rail (right, 10%, collapsible).
+- PDF viewer: page navigator, zoom, highlight overlay synced with the extraction selection.
+- Extraction panel tabs: SoFP · SoCI · SoCF · Notes · Narrative. Each table is editable inline with sticky audit log (original → revised value, by whom, when, reason). Cells with low confidence highlighted amber; click → jumps the PDF to the source page with the cell box drawn.
+- Below each table: a "Notes" thread (analyst can attach reasoning / queries to the borrower); a "Mark needs review" toggle.
+- Footer: Reject / Save draft / **Approve source**. Approve is gated by zero outstanding "needs review" flags.
+
+**S5. Approval & Lock-in [P1]**
+- Returns to S3 with the tile flipped to "Approved" state. Cross-source canonical spread is now generated server-side. Top-bar action "Run financial analysis" is enabled.
+
+**S6. Financial Analysis Workbench [P1]**
+- Header KPI strip: Revenue, EBITDA, PAT, Total Assets, Equity, Net Debt, Cash, Cash Runway — each with YoY arrow.
+- Tabs: **Spreads** (canonical multi-year SoFP / SoCI / SoCF with common-size view toggle) · **Ratios & Trends** (liquidity / leverage / coverage / profitability / efficiency tiles, each with 5-FY sparkline + policy threshold band) · **Cash Flow & Runway** (operating-CF chart, runway gauge, debt-service schedule placeholder) · **Stress Studio** (sliders for revenue, margin, SORA, FX → live ratio / runway re-compute, MAS 612 grade migration shown).
+- Every number is right-click-able: "Drill into source", "Add comment", "Ask Co-Pilot".
+
+**S7. Business Insight Workspace [P2 — Phase 1 lite]**
+- Triggered by "Generate Business Insight" button on S6.
+- Co-Pilot launches a multi-step web-research flow with a visible activity stream ("Searched ACRA → 1 charge", "Searched LinkedIn → 4 directors", "Searched news → 12 articles in last 12 months").
+- Output panes: **Directors & officers** (cards with photo, role, tenure, prior roles, board memberships, source links); **Executive profile** (CEO bio, public profile, speaking engagements, controversies); **Market position** (top news, partnerships, awards, adverse media); **Sources & confidence** (every paragraph traceable).
+- Each output has an "Accept", "Edit", "Reject" button — only accepted items flow into the memo.
+
+**S8. Industry Assessment [P2 — Phase 1 SSIC + qualitative]**
+- SSIC-keyed view: industry definition, structural growth drivers, regulatory backdrop (e.g. MAS Green Finance Action Plan for ESG-training names), barriers, key risks.
+- Peer panel (Phase 2): peer set (auto-selected by SSIC + size band), median ratios overlay on the Borrower's ratios, percentile bands.
+- Multiples panel (Phase 2): EV/Revenue, EV/EBITDA medians from public comparables, with caveats for size and stage.
+
+**S9. Credit Memo Workspace + Co-Pilot [P1]**
+- Two-column layout: left = sectioned memo editor (Cover · Executive Summary · Borrower Profile · Industry · Financial Analysis · Cash Flow & Runway · Business Insight · Qualitative · Risks & Mitigants · Recommendation · Appendices); right = persistent Co-Pilot panel.
+- Each section header has actions: **Regenerate** (re-run section agent), **Tighten**, **Expand**, **Insert citation**, **History**.
+- Every claim shows a citation chip — click → opens the source (PDF page, ratio formula, web-research card).
+- Co-Pilot conversational box: "Stress at -25% revenue and update §6", "Draft 5 questions for the CFO", "Rewrite §1 for the credit committee tone".
+- Export: .docx (banker template) + .pdf with citations resolved. Phase 1 ships .docx export.
+
+**S10. Risk & Recommendation [P1]**
+- Score-card breakdown (driver-level), recommended MAS 612 grade with analyst-override field and mandatory justification, ECL Stage tag, proposed facility structure & covenants table editable inline.
+- Locks the case for committee submission; an immutable snapshot is stored.
+
+#### Cross-cutting UX principles
+
+- **One workbench layout** — every screen uses the same shell (top bar + left nav + main canvas + collapsible right Co-Pilot rail). Familiarity beats novelty.
+- **Always-on Co-Pilot** — the rail is present on S3–S10. Phase 1 supports skills covering ingestion review, ratio explanation, comparison, stress, probe drafting, memo editing.
+- **Evidence chips everywhere** — every number / claim links to either a PDF page+cell, a ratio formula, or a web-research source.
+- **Visible agent activity** — when a long-running agent kicks off, the user sees the tool calls stream in (not a frozen spinner).
+- **Empty-state quality** — every screen has an instructive empty state, not "No data".
+- **Visual language** — informational palette (deep blue accent #1F3A5F, alt fill #F2F4F7), Inter or system UI typeface, 8-pt spacing grid, status colours (Pass green / Watch amber / Risk red).
+- **Accessibility** — WCAG 2.1 AA contrast, full keyboard navigation, screen-reader labels on every interactive element.
+- **Demo-friendly** — every Phase-1 screen runs against the `input/financials/` GoImpact sample without any backend secrets, producing the same numbers the worked example in `docs/CIM_GoImpact_SG_FY22-24.docx` carries.
 
 ### B5. Data Model (Postgres, key tables)
 
@@ -368,47 +452,73 @@ Every assistant reply carries `{reply, tool_trace[], citations[]}` so the UI can
 
 ---
 
-# Part C — Build Plan (Phased)
+# Part C — Phased Delivery Plan
 
-### Phase 0 — Stabilise (1 week)
-- Postgres migration of `CaseStore` (interface preserved).
-- Object store for raw uploads.
-- Auth + role scaffolding (analyst/senior/credit officer).
-- Restructure repo: `core/analytics/`, `core/agents/`, `core/ingestion/`, `core/persistence/`, `core/co_worker/`.
+> The product positioning is "Agentic platform for company analysis with integrated Credit Co-Pilot". Phase 1 makes that promise real on **financial statements only** with a polished UX. Subsequent phases broaden the data plane (web research, bank, GST, bureau) and deepen agentic capabilities (peer multiples, covenants, committee workflow).
 
-### Phase 1 — Functional MVP (3–4 weeks)
-- Document classifier + checklist UI.
-- Financial spread workbench (editable, multi-year).
-- DSCR + stress + peer benchmark services with API.
-- Replace `_generate_credit_memo` with section-agent + Memo-Writer.
-- Tool-using co-worker (LLM with the tool schema above), streaming.
-- New frontend shell: workspace + document viewer with highlights + memo editor.
+### Phase 1 — Financial-Statement MVP with Credit Co-Pilot (6–8 weeks) [in-flight]
 
-### Phase 2 — Agentic Depth (4–6 weeks)
-- Working Capital, Cash Flow, Forensic, Covenant agents.
-- Cross-source reconciliation UI (FS-GST-Bank triangle).
-- Override + audit trail end-to-end.
-- SME score-card vs Corporate PD/LGD/EAD models.
-- Export pack (memo.docx + appendices.zip with citations resolved).
+**Promise to the analyst.** "Drop in the last 3–5 years of audited / unaudited financial statements and get a credit memo you'd be proud to put in front of committee — in under an hour, with every number cited."
 
-### Phase 3 — Integrations + Scale (6–8 weeks, Singapore)
-- **CBS**, **DP Bureau / Experian Business**, **ACRA BizFile+**, **IRAS**, **SGFinDex**, **CPF** integrations.
-- Multi-bank parsers (**DBS, OCBC, UOB, SCB, HSBC, Citi, Maybank**).
-- OCR fallback for scanned PDFs; **XBRL** parser for ACRA-filed FS.
-- Vector index for doc retrieval; co-worker RAG over the case corpus.
-- Committee workflow: refer-back, multi-approver, decision logs (MAS-inspectable).
+**In scope:**
+1. **Auth + Roles** — email / SSO sign-in; roles (Analyst, Senior Analyst, Credit Officer, Admin); case-level access control.
+2. **Case lifecycle** — create / list / search / archive; status machine (Intake → Ingested → Reviewed → Approved → Analysed → Memo Draft → Submitted).
+3. **Ingestion** — multi-PDF / Excel drag-drop, ACRA-aware classifier (z124 / C223 / BM42A / UFS / Excel) including OCR fallback for image-only UFS — **already built in `core/ingestion/`**, hook the existing CLI demo into the API.
+4. **Document Intelligence Dashboard (S3)** — per-source tiles with extracted tables, classifier confidence, FY tag, OCR flag, page thumbnails.
+5. **Per-PDF Review (S4)** — PDF viewer + side-by-side extraction editor with cell-level audit trail, inline notes, "needs review" toggle, source-by-source approval.
+6. **Canonical 5-FY Spread** — pivot the merged blocks into a single editable workbench; analyst overrides logged immutably.
+7. **Financial Analysis Workbench (S6)** — ratio engine, trend sparklines, common-size view, cash-flow & runway analyser, stress studio (sliders for revenue / margin / SORA / FX).
+8. **Credit Co-Pilot (tool-using LLM)** — persistent right-rail across screens; Phase-1 tools: `get_ratio`, `compare_periods`, `run_stress`, `get_finding`, `draft_probe`, `edit_memo`, `flag_review`, `cite`. Streaming responses with visible tool-call trace.
+9. **Business Insight — lite** — director / executive profile via web-search-tool (1-shot agent), adverse-media check, summarised into the Business Insight card. (Full agent flow in Phase 2.)
+10. **Industry Assessment — SSIC qualitative** — SSIC-keyed narrative (regulatory, drivers, risks). Peer multiples deferred to Phase 2.
+11. **Credit Memo Workspace (S9)** — sectioned editor + Co-Pilot regenerate / tighten / expand, citation chips, version history, .docx export using the banker template proven in `docs/CIM_GoImpact_SG_FY22-24.docx`.
+12. **Risk & Recommendation (S10)** — MAS 612 grade, SFRS(I) 9 ECL stage, analyst override with mandatory justification, recommended facility structure & covenants.
+13. **Audit trail** — every override / agent run / memo edit captured and exportable.
+14. **Polished UI** — design system (palette, type, spacing), accessibility, empty states, demo-ready against `input/financials/` GoImpact sample.
 
-### Phase 4 — Productisation
-- Tenant isolation, SSO, SCIM.
-- Policy editor (thresholds per segment/industry).
-- Model governance dashboard.
+**Out of scope for Phase 1:** bank-statement spreading, GST F5 triangulation, bureau pull, peer-multiples engine, committee multi-approver workflow, integrations (CBS / ACRA API / SGFinDex / CPF / IRAS), borrower portal.
+
+**Phase 1 acceptance test (demo script).** Using only `input/financials/`, an analyst can produce a CIM materially equivalent to `docs/CIM_GoImpact_SG_FY22-24.docx` in under 60 minutes with at most 5 manual overrides.
+
+### Phase 2 — Agentic Depth: Business Insight + Industry + Working Capital (6–8 weeks)
+
+- **Business Insight Agent (S7 full)** — multi-step web research (directors / executives / partnerships / news / regulatory) with cited paragraphs, accept / edit / reject controls; integrates with the memo.
+- **Industry Agent — peer multiples** — peer set selection, ratio median overlay, EV/Revenue and EV/EBITDA from public comparables, percentile bands.
+- **Additional agents** — Working Capital, Cash Flow & DSCR (full), Forensic / Anomaly, Covenant.
+- **Cross-source reconciliation** — once GST F5 or bank data is uploaded, FS-vs-GST-vs-bank triangulation.
+- **Override + audit trail** end-to-end across all agents.
+- **Committee workflow basics** — refer-back, sign-off chain, decision log.
+- **SME scorecard vs Corporate PD / LGD / EAD** models.
+
+### Phase 3 — Singapore Integrations + Scale (8–10 weeks)
+
+- **CBS, DP Bureau / Experian Business, ACRA BizFile+, IRAS, SGFinDex, CPF Board** integrations (consent-based).
+- Multi-bank parsers (DBS, OCBC, UOB, SCB, HSBC, Citi, Maybank).
+- **XBRL** parser for ACRA-filed FS (where available, bypasses the z124 PDF route).
+- Vector index for doc retrieval; Co-Pilot RAG over the case corpus.
+- MAS-inspectable decision logs, model governance dashboard, MAS FEAT / Veritas assessment artefacts.
+
+### Phase 4 — Productisation (ongoing)
+
+- Tenant isolation, SCIM, configurable policy thresholds per segment / industry.
 - Borrower self-service portal (KYC, document collection, status).
+- Marketplace of agent templates per industry segment.
+- Multi-region deployment (SG primary, optional HK / MY).
+
+### Phase delivery summary
+
+| Phase | Theme | Output | Effort |
+|---|---|---|---|
+| 1 | FS-only MVP with Credit Co-Pilot | Polished workbench, demo-grade memo, audit trail | 6–8 wks |
+| 2 | Agentic depth (Business Insight, Industry, WC, CF, Covenant agents) | Full agentic stack, committee workflow basics | 6–8 wks |
+| 3 | Singapore integrations | CBS, ACRA, IRAS, SGFinDex, multi-bank parsers, RAG Co-Pilot | 8–10 wks |
+| 4 | Productisation | Tenant isolation, borrower portal, marketplace | continuous |
 
 ---
 
-# Part D — Demo Path on Current Inputs
+# Part D — Phase 1 Demo Path on Current Inputs
 
-Existing inputs in the repo (`input/financials/FY2022..FY2024` PDFs, `input/bankstatements/` **HSBC Singapore** PDFs, `GSTR3B_*` / Experian XML) are placeholders carried over from earlier work — for the Singapore demo we re-cast the same company as a **Singapore-incorporated Pte Ltd** (e.g. `GOIMPACT CAPITAL PARTNERS (SG) PL`, already referenced in `README.md`).
+The Phase-1 demo runs against `input/financials/` for **GoImpact Capital Partners (Singapore) Pte. Ltd.** — UEN 202037175R — and produces an output materially equivalent to `docs/CIM_GoImpact_SG_FY22-24.docx`, which was generated end-to-end by the platform's ingestion + analysis path and serves as the worked reference.
 
 For the Singapore happy-path slice, swap the placeholders for one Singapore-native sample (an audited SFRS PDF, an HSBC SG statement set already present, a few GST F5 returns, a CBS / DP Bureau extract) and:
 

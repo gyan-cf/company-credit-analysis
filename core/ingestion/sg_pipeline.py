@@ -47,8 +47,17 @@ from .fs_text_extract import (
     extraction_to_periods,
 )
 from .fs_ocr_extract import extract_fs_ufs, ocr_available
-from .narrative_extract import extract_narrative_sections
+from .narrative_extract import extract_narrative_sections, NarrativeSection
 from .block_writer import write_source_blocks, gc_stale_sources, write_merged_blocks
+from .document_writer import (
+    build_document,
+    validate_document,
+    write_document_json,
+    parse_fs_pdf_to_document,
+    document_to_fs_extraction,
+    document_to_narrative_sections,
+)
+from core.knowledge.agentic_wiki import write_agentic_wiki_document
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +95,24 @@ class IngestionResult:
 class SGIngestionPipeline:
     """Orchestrate classification → extraction → consolidation for SG ACRA filings."""
 
-    def __init__(self, expand_zips: bool = True, ocr_enabled: bool = True, ocr_dpi: int = 300):
+    def __init__(
+        self,
+        expand_zips: bool = True,
+        ocr_enabled: bool = True,
+        ocr_dpi: int = 300,
+        *,
+        use_agentic: bool = True,
+        agentic_model: Optional[str] = None,
+    ):
         self.expand_zips = expand_zips
         self.ocr_enabled = ocr_enabled and ocr_available() and not os.getenv("OCR_DISABLED")
         self.ocr_dpi = ocr_dpi
+        # When True (default) FS PDFs go through the vision-LLM extractor and
+        # `extract_fs_z124` / `extract_fs_ufs` are bypassed. The agentic call
+        # produces the canonical document dict; we re-derive an FSExtraction
+        # from it so the existing block writer + merged-block path keep working.
+        self.use_agentic = use_agentic
+        self.agentic_model = agentic_model
 
     # ------------------------------------------------------------------ Public API
 
@@ -99,6 +122,7 @@ class SGIngestionPipeline:
         *,
         parsed_root: Optional[Path] = None,
         case_root: Optional[Path] = None,
+        on_file_processed: Optional[Any] = None,
     ) -> IngestionResult:
         """
         Run the pipeline over `root`.
@@ -128,33 +152,55 @@ class SGIngestionPipeline:
             result.classifications.append(cf.to_dict())
             classified.append(cf)
 
-        # 3. Route each file. Keep the source ClassifiedFile alongside its
-        # FSExtraction so the block writer can use the original path.
+        # 3. Route each file. Carry the agentic document dict alongside the
+        # ClassifiedFile + derived FSExtraction so step 7 can write document.json
+        # without re-extracting.
         profiles: List[CorporateProfile] = []
-        fs_pairs: List[Tuple[ClassifiedFile, FSExtraction]] = []
+        fs_pairs: List[Tuple[ClassifiedFile, FSExtraction, Optional[Dict[str, Any]]]] = []
         for cf in classified:
             try:
                 if cf.source_type == "acra_filing_cover":
                     profiles.append(extract_bm42a(cf.path))
                 elif cf.source_type == "acra_annual_return":
                     profiles.append(extract_c223(cf.path))
-                elif cf.source_type == "fs_xbrl_render":
-                    fs_pairs.append((cf, extract_fs_z124(cf.path)))
-                elif cf.source_type == "fs_ufs":
-                    if self.ocr_enabled:
-                        fs_pairs.append((cf, extract_fs_ufs(cf.path, dpi=self.ocr_dpi)))
-                    else:
-                        result.review_flags.append({
-                            "severity": "high",
-                            "message": "UFS PDF detected but OCR disabled — FS not extracted",
-                            "source": cf.path.name,
+                elif cf.source_type in ("fs_xbrl_render", "fs_ufs"):
+                    try:
+                        if self.use_agentic:
+                            doc = parse_fs_pdf_to_document(
+                                cf.path, strategy="agentic", model=self.agentic_model,
+                            )
+                            ext = document_to_fs_extraction(doc, cf.path)
+                            fs_pairs.append((cf, ext, doc))
+                        elif cf.source_type == "fs_xbrl_render":
+                            fs_pairs.append((cf, extract_fs_z124(cf.path), None))
+                        elif self.ocr_enabled:
+                            fs_pairs.append((cf, extract_fs_ufs(cf.path, dpi=self.ocr_dpi), None))
+                        else:
+                            result.review_flags.append({
+                                "severity": "high",
+                                "message": "UFS PDF detected but OCR disabled — FS not extracted",
+                                "source": cf.path.name,
+                            })
+                            if on_file_processed is not None:
+                                on_file_processed(cf.path.name, "failed", "OCR disabled")
+                            continue
+                    except Exception as exc:
+                        logger.exception("FS extraction failed for %s", cf.path.name)
+                        if on_file_processed is not None:
+                            on_file_processed(cf.path.name, "failed", f"{type(exc).__name__}: {exc}")
+                        result.errors.append({
+                            "file": cf.path.name,
+                            "error": f"{type(exc).__name__}: {exc}",
                         })
+                        continue
+                    if on_file_processed is not None:
+                        on_file_processed(cf.path.name, "ready", None)
                 elif cf.source_type == "fs_excel":
                     # delegate to existing excel parser if available
                     try:
                         from features.fs_excel_parser import parse_fs_excel
                         data = parse_fs_excel(str(cf.path))
-                        fs_pairs.append((cf, self._wrap_excel_as_extraction(cf.path, data)))
+                        fs_pairs.append((cf, self._wrap_excel_as_extraction(cf.path, data), None))
                     except Exception as e:
                         result.errors.append({"file": cf.path.name, "error": f"fs_excel: {e}"})
                 else:
@@ -164,7 +210,7 @@ class SGIngestionPipeline:
                 logger.exception("Ingestion failed for %s", cf.path)
                 result.errors.append({"file": cf.path.name, "error": f"{type(e).__name__}: {e}"})
 
-        fs_extractions = [fe for _, fe in fs_pairs]
+        fs_extractions = [fe for _, fe, _ in fs_pairs]
 
         # 4. Merge profiles + FS extractions
         merged_profile = merge_profiles(profiles)
@@ -189,7 +235,11 @@ class SGIngestionPipeline:
                 result.blocks_index = self._write_blocks(
                     fs_pairs, parsed_root=Path(parsed_root), case_root=case_root,
                     started_at=result.started_at,
+                    merged_profile=merged_profile,
                 )
+                # Surface document-validation review flags on the IngestionResult
+                # so the API + frontend see them next to extraction flags.
+                result.review_flags.extend(result.blocks_index.get("validation_review_flags", []))
             except Exception as e:
                 logger.exception("Block writing failed")
                 result.errors.append({"file": "<blocks>", "error": f"{type(e).__name__}: {e}"})
@@ -223,26 +273,57 @@ class SGIngestionPipeline:
         return extracted
 
     @staticmethod
+    def _entity_extras_from_profile(merged_profile: Optional[CorporateProfile]) -> Dict[str, Any]:
+        """Pull the ACRA-derived fields the document schema's entity block accepts."""
+        if not merged_profile:
+            return {"incorporation_country": "SG"}
+        extras: Dict[str, Any] = {"incorporation_country": "SG"}
+        if merged_profile.entity_name:
+            extras["name"] = merged_profile.entity_name
+        if merged_profile.uen:
+            extras["uen"] = merged_profile.uen
+        if merged_profile.primary_ssic_code:
+            extras["ssic_code"] = merged_profile.primary_ssic_code
+        if merged_profile.primary_ssic_desc:
+            extras["ssic_description"] = merged_profile.primary_ssic_desc
+        return extras
+
+    @staticmethod
     def _write_blocks(
-        fs_pairs: List[Tuple[ClassifiedFile, FSExtraction]],
+        fs_pairs: List[Tuple[ClassifiedFile, FSExtraction, Optional[Dict[str, Any]]]],
         *,
         parsed_root: Path,
         case_root: Path,
         started_at: str,
+        merged_profile: Optional[CorporateProfile] = None,
     ) -> Dict[str, Any]:
         """
         Materialise each FSExtraction as a per-source block bundle on disk and
         return a rollup index ready to drive the financials UI.
+
+        Per source PDF, this also emits a schema-conformant `document.json`
+        (sg_fs_document_schema.json) and validates it. Validation errors are
+        surfaced into the source's index entry AND into the run's review_flags
+        — they don't abort the pipeline, but they're visible.
         """
         parsed_root = Path(parsed_root)
         parsed_root.mkdir(parents=True, exist_ok=True)
 
+        entity_extras = SGIngestionPipeline._entity_extras_from_profile(merged_profile)
+        validation_review_flags: List[Dict[str, Any]] = []
+
         sources: List[Dict[str, Any]] = []
         blocks_flat: List[Dict[str, Any]] = []
         sources_with_extractions: List[Tuple[str, FSExtraction]] = []
-        for cf, ext in fs_pairs:
-            narrative = extract_narrative_sections(ext.pages_text) if ext.pages_text else []
-            raw_text = "\n\n".join(ext.pages_text) if ext.pages_text else ""
+        for cf, ext, precomputed_doc in fs_pairs:
+            # Narratives: prefer those derived from the agentic doc; fall back
+            # to the rule-based slicer when only pages_text is available.
+            if precomputed_doc is not None:
+                narrative = document_to_narrative_sections(precomputed_doc)
+                raw_text = ""
+            else:
+                narrative = extract_narrative_sections(ext.pages_text) if ext.pages_text else []
+                raw_text = "\n\n".join(ext.pages_text) if ext.pages_text else ""
             manifest = write_source_blocks(
                 extraction=ext,
                 narrative_sections=narrative,
@@ -253,12 +334,71 @@ class SGIngestionPipeline:
             )
             source_id = manifest["source_id"]
             sources_with_extractions.append((source_id, ext))
+
+            # Document.json: prefer the pre-computed agentic doc (already has
+            # full block structure + notes + tables). Fall back to building
+            # one from the FSExtraction when no doc was produced (rule-based
+            # path or excel).
+            doc_json_rel: Optional[str] = None
+            wiki_doc_rel: Optional[str] = None
+            doc_errors: List[str] = []
+            try:
+                if precomputed_doc is not None:
+                    doc = precomputed_doc
+                    # Overlay ACRA-derived entity fields (canonical name,
+                    # ssic_code, ssic_description) so they take precedence
+                    # over whatever the LLM read off the cover.
+                    if entity_extras:
+                        entity_block = doc.setdefault("document", {}).setdefault("entity", {})
+                        for k, v in entity_extras.items():
+                            if v not in (None, ""):
+                                entity_block[k] = v
+                else:
+                    doc = build_document(
+                        extraction=ext,
+                        narrative_sections=narrative,
+                        source_pdf=cf.path,
+                        source_id=source_id,
+                        entity_extras=entity_extras,
+                    )
+                doc_errors = validate_document(doc)
+                write_document_json(doc, parsed_root / source_id / "document.json")
+                doc_json_rel = f"{source_id}/document.json"
+                write_agentic_wiki_document(
+                    doc,
+                    parsed_root / source_id / "wiki_document.json",
+                    source_id=source_id,
+                    source_file=cf.path.name,
+                )
+                wiki_doc_rel = f"{source_id}/wiki_document.json"
+                if doc_errors:
+                    validation_review_flags.append({
+                        "severity": "high",
+                        "message": (
+                            f"document.json failed sg_fs_document_schema validation "
+                            f"({len(doc_errors)} error(s))"
+                        ),
+                        "source": cf.path.name,
+                        "errors": doc_errors[:10],
+                    })
+            except Exception as e:
+                logger.exception("document build/write failed for %s", cf.path.name)
+                doc_errors = [f"build/write failure: {type(e).__name__}: {e}"]
+                validation_review_flags.append({
+                    "severity": "high",
+                    "message": f"document.json build/write threw {type(e).__name__}",
+                    "source": cf.path.name,
+                    "errors": doc_errors,
+                })
             sources.append({
                 "source_id": source_id,
                 "source_type": cf.source_type,
                 "original_filename": manifest["original_filename"],
                 "original_path": manifest.get("original_path"),
                 "manifest": f"{source_id}/manifest.json",
+                "document_json": doc_json_rel,
+                "wiki_document": wiki_doc_rel,
+                "document_validation_errors": doc_errors,
                 "entity": manifest["entity"]["name"],
                 "uen": manifest["entity"]["uen"],
                 "framework": manifest["entity"]["framework"],
@@ -297,6 +437,10 @@ class SGIngestionPipeline:
             "block_count": len(blocks_flat),
             "merged_block_count": len(merged_blocks),
             "removed_stale": removed,
+            "document_validation_error_count": sum(
+                len(s.get("document_validation_errors", []) or []) for s in sources
+            ),
+            "validation_review_flags": validation_review_flags,
             "sources": sources,
             "blocks": blocks_flat,
         }

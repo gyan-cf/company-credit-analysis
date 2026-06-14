@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://credisage.app/schemas/sg_fs_document_schema.json",
+  "title": "SG Financial Statement Document",
+  "description": "Structured representation of one Singapore SFRS(I) / SFRS financial-statement PDF. Blocks are emitted in document order; each block is either narrative (markdown) or a structured statement / notes table. This schema is the source-of-truth shape that the document.json artefact under cases/<id>/parsed/financials/<source_id>/ must conform to.",
+
+  "type": "object",
+  "required": ["document", "blocks"],
+  "additionalProperties": false,
+  "properties": {
+    "document": {"$ref": "#/$defs/Document"},
+    "blocks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/Block"}
+    }
+  },
+
+  "$defs": {
+    "Document": {
+      "type": "object",
+      "description": "Filing-level metadata — what entity, what FY, what reporting framework, audit status, presentation perimeter.",
+      "required": [
+        "entity", "fye", "fy",
+        "framework", "audited", "consolidated", "currency"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "entity": {
+          "type": "object",
+          "required": ["name"],
+          "additionalProperties": true,
+          "properties": {
+            "name":                 {"type": "string", "minLength": 1},
+            "uen":                  {"type": "string"},
+            "ssic_code":            {"type": "string"},
+            "ssic_description":     {"type": "string"},
+            "incorporation_country":{"type": "string", "default": "SG"}
+          }
+        },
+        "fye": {
+          "type": "string",
+          "description": "Financial year-end as stated on the cover (e.g. '31 December 2024')."
+        },
+        "fy": {
+          "type": "string",
+          "pattern": "^FY\\d{4}$",
+          "description": "Primary FY tag (e.g. 'FY2024'). Statement columns can carry additional FYs."
+        },
+        "framework": {
+          "type": "string",
+          "enum": ["SFRS(I)", "SFRS", "IFRS"]
+        },
+        "audited":      {"type": "boolean"},
+        "consolidated": {"type": "boolean"},
+        "currency":     {"type": "string", "pattern": "^[A-Z]{3}$"},
+        "currency_unit":{
+          "type": "string",
+          "description": "Presentation scale on the source PDF, verbatim (e.g. 'S$', \"S$'000\", 'SGD millions').",
+          "default": "S$"
+        },
+
+        "source_pdf":         {"type": "string"},
+        "source_id":          {"type": "string"},
+        "extraction_method":  {"type": "string", "enum": ["text", "ocr", "excel", "agentic"]}
+      }
+    },
+
+    "PageRange": {
+      "type": "array",
+      "items":    {"type": "integer", "minimum": 1},
+      "minItems": 1,
+      "maxItems": 2,
+      "description": "[first_page, last_page] inclusive, 1-indexed in the source PDF. Single-page blocks may use [N]; the writer normalises to [N, N]."
+    },
+
+    "Block": {
+      "description": "One discriminator over the block kinds — exactly one matches.",
+      "oneOf": [
+        {"$ref": "#/$defs/NarrativeBlock"},
+        {"$ref": "#/$defs/StatementBlock"},
+        {"$ref": "#/$defs/NotesBlock"}
+      ]
+    },
+
+    "NarrativeBlock": {
+      "type": "object",
+      "description": "Prose blocks — Cover, Corporate Information, Directors' Statement, Independent Auditor's Report. UFS filings omit the auditor's report.",
+      "required": ["kind", "page_range", "markdown"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["cover", "corporate_info", "directors_statement", "auditor_report"]
+        },
+        "title":      {"type": "string"},
+        "page_range": {"$ref": "#/$defs/PageRange"},
+        "markdown":   {"type": "string"}
+      }
+    },
+
+    "StatementBlock": {
+      "type": "object",
+      "description": "One of the four SFRS(I) primary statements. Consolidated filings carry paired columns (group + company); standalone filings carry company-only columns. Multi-FY presentation is one column per (perimeter, FY).",
+      "required": ["kind", "type", "title", "page_range", "columns", "rows"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"const": "statement"},
+        "type": {
+          "type": "string",
+          "enum": ["sofp", "soci", "soce", "socf"],
+          "description": "sofp = Statement of Financial Position; soci = Statement of Profit or Loss and OCI; soce = Statement of Changes in Equity; socf = Statement of Cash Flows."
+        },
+        "title":         {"type": "string", "minLength": 1},
+        "page_range":    {"$ref": "#/$defs/PageRange"},
+        "currency_note": {"type": "string"},
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/Column"}
+        },
+        "rows": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/StatementRow"}
+        }
+      }
+    },
+
+    "Column": {
+      "type": "object",
+      "required": ["id", "perimeter", "fy"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Key referenced by StatementRow.values. Convention: '<perimeter>_<fy>' (e.g. 'company_FY2024')."
+        },
+        "perimeter":  {"type": "string", "enum": ["company", "group"]},
+        "fy":         {"type": "string", "pattern": "^FY\\d{4}$"},
+        "period_end": {"type": ["string", "null"]},
+        "currency":   {"type": "string", "pattern": "^[A-Z]{3}$"}
+      }
+    },
+
+    "StatementRow": {
+      "type": "object",
+      "description": "One row inside a statement block. Section headers and spacers carry no values; subtotal/total/line rows do.",
+      "required": ["row_type", "label", "indent_level"],
+      "additionalProperties": true,
+      "properties": {
+        "row_type": {
+          "type": "string",
+          "enum": ["section_header", "line", "subtotal", "total", "spacer"]
+        },
+        "label":          {"type": "string"},
+        "raw_label":      {"type": "string"},
+        "canonical_code": {"type": ["string", "null"]},
+        "values": {
+          "type": "object",
+          "description": "Keyed by Column.id; null for missing cells.",
+          "additionalProperties": {"type": ["number", "null"]}
+        },
+        "indent_level": {"type": "integer", "minimum": 0},
+        "section_path": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Parent-to-leaf section names (e.g. ['Assets', 'Current Assets'])."
+        },
+        "note_ref":      {"type": ["string", "null"]},
+        "display_order": {"type": "integer", "minimum": 0},
+        "page":          {"type": "integer", "minimum": 1},
+        "confidence":    {"type": "number",  "minimum": 0, "maximum": 1},
+        "flags": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+
+    "NotesBlock": {
+      "type": "object",
+      "description": "Numbered notes to the financial statements. Each item can carry both prose (markdown) and tabular schedules (tables).",
+      "required": ["kind", "items"],
+      "additionalProperties": false,
+      "properties": {
+        "kind":       {"const": "notes"},
+        "page_range": {"$ref": "#/$defs/PageRange"},
+        "items": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/NoteItem"}
+        }
+      }
+    },
+
+    "NoteItem": {
+      "type": "object",
+      "required": ["no", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "no": {
+          "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "string", "pattern": "^\\d{1,2}([a-z]|\\.\\d{1,2})?$"},
+            {"type": "number"}
+          ],
+          "description": "Note number. Integer for plain '1', '2'; string for '3a'; dotted sub-notes '2.1' are accepted as either string or number."
+        },
+        "title":      {"type": "string", "minLength": 1},
+        "page_range": {"$ref": "#/$defs/PageRange"},
+        "subkind": {
+          "type": "string",
+          "enum": ["corporate_info", "policies", "note"],
+          "default": "note",
+          "description": "Note 1 is conventionally 'corporate_info'; Note 2 is conventionally 'policies'; all others 'note'."
+        },
+        "markdown": {"type": "string"},
+        "tables": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/NoteTable"}
+        }
+      }
+    },
+
+    "NoteTable": {
+      "type": "object",
+      "description": "Tabular schedule inside a note (e.g. PPE roll-forward, borrowings maturity, related-party transactions).",
+      "required": ["columns", "rows"],
+      "additionalProperties": false,
+      "properties": {
+        "caption":  {"type": "string"},
+        "footnote": {"type": "string"},
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "id":    {"type": "string", "minLength": 1},
+              "label": {"type": "string"},
+              "type": {
+                "type": "string",
+                "enum": ["text", "number", "date"],
+                "default": "text"
+              }
+            }
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {"type": ["string", "number", "null"]}
+          }
+        }
+      }
+    }
+  }
+}

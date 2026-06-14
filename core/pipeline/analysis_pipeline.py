@@ -44,6 +44,7 @@ from core.agents.fs_analysis import (
 from core.cases.case_store import CaseStore
 from core.features.fs_analytics import build_fs_agent_data
 from core.ingestion.sg_pipeline import SGIngestionPipeline
+from core.knowledge import build_case_wiki
 
 
 class AnalysisPipeline:
@@ -80,6 +81,7 @@ class AnalysisPipeline:
             case_id, "fs_periods_canonical",
             {"periods": result.get("periods", []), "summary": result.get("summary", {})},
         )
+        build_case_wiki(case_root)
         return result.get("blocks_index", {})
 
     # ------------------------------------------------------------------ analytics
@@ -313,6 +315,7 @@ class AnalysisPipeline:
             self.store.update_status(case_id, "generating_memo", 95)
             memo = self._generate_credit_memo(assessment, manifest, fs_data)
             self.store.save_credit_memo(case_id, memo)
+            knowledge = build_case_wiki(self.store._case_path(case_id))
 
             self.store.update_status(case_id, "completed", 100)
             return {
@@ -320,6 +323,11 @@ class AnalysisPipeline:
                 "status": "completed",
                 "assessment_summary": assessment,
                 "credit_memo": memo,
+                "knowledge": {
+                    "page_count": knowledge.get("page_count", 0),
+                    "chunk_count": knowledge.get("chunk_count", 0),
+                    "evidence_count": knowledge.get("evidence_count", 0),
+                },
             }
 
         except Exception as e:

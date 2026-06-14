@@ -22,7 +22,7 @@ export default function CaseList() {
       {loading && <p>Loading...</p>}
       <div className="grid">
         {cases.map((c) => (
-          <Link key={c.case_id} to={`/cases/${c.case_id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+          <Link key={c.case_id} to={`/cases/${c.case_id}/intake`} style={{ textDecoration: 'none', color: 'inherit' }}>
             <div className="card">
               <h3>{c.company_name}</h3>
               <p style={{ color: '#64748b', fontSize: '0.9rem' }}>

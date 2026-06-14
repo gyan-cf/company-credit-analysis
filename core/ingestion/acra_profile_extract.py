@@ -22,7 +22,12 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
-UEN_RE = re.compile(r"\b(\d{8,10}[A-Z])\b")
+# SG UEN formats:
+#   <8 or 10 digits><check letter>             - local companies (most common)
+#   T|S|R<YY><BB><NNNN><check letter>          - LLPs, partnerships, etc.
+#                                                (e.g. T15LP0001A = LLP)
+UEN_PATTERN = r"(?:[0-9]{8,10}[A-Z]|[A-Z][0-9]{2}[A-Z]{2}[0-9]{4}[A-Z])"
+UEN_RE = re.compile(rf"\b({UEN_PATTERN})\b")
 DATE_RE = re.compile(r"(\d{1,2}\s+\w+\s+\d{4}|\d{2}/\d{2}/\d{4})")
 SSIC_RE = re.compile(r"\b(\d{5})\b(?:\s*-\s*|\s+)([A-Za-z][^\n]{2,80})")
 
@@ -100,6 +105,86 @@ def _read_pdf(path: Path) -> str:
 
 
 # ---- Field extractors ---------------------------------------------------------
+
+# Characters that can appear in a Singapore entity name. Allows brackets
+# (`(Singapore)`), slashes (`A/S`), ampersands, en-dashes, etc. — but never
+# lower-case, because every SG entity name on these covers is upper-cased.
+_NAME_CHARS = r"A-Z0-9 &'.,\-()/"
+_NAME_LINE_RE = re.compile(rf"^[{_NAME_CHARS}]+$")
+_HEX_HASH_RE = re.compile(r"^[0-9a-f]{16,}$")
+
+# Suffixes that confirm a candidate string really is an entity name.
+_ENTITY_SUFFIX_RE = re.compile(
+    r"\b("
+    r"PTE\.?\s*LTD\.?|PRIVATE\s+LIMITED|LIMITED|LTD\.?|"
+    r"LIMITED\s+LIABILITY\s+PARTNERSHIP|LLP|"
+    r"PUBLIC\s+COMPANY\s+LIMITED|PLC|"
+    r"INC\.?|INCORPORATED|"
+    r"HOLDINGS|GROUP"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_entity_name(raw: str) -> str:
+    """Trim, collapse whitespace, drop trailing punctuation that isn't part of the suffix."""
+    s = " ".join(raw.split()).strip()
+    # Strip trailing junk like ", and the financial statements..." — defensive.
+    s = re.sub(r"\s*[,;].*$", "", s)
+    return s
+
+
+def _extract_uen_and_name_from_header(text: str) -> Optional[tuple]:
+    """
+    Anchor on "UEN Entity Name" / "UEN Entity name" — the next line carries
+    "<UEN> <ENTITY NAME>". Some ACRA forms (BM42A) wrap the entity name onto
+    the line below; if the first line lacks an entity suffix and the next
+    line is a short all-caps continuation that does, we stitch them together.
+
+    Returns (uen, name) or None.
+    """
+    m = re.search(
+        rf"UEN\s+Entity\s+Name\s*\n({UEN_PATTERN})\s+([^\n]+?)(?:\n|$)",
+        text, re.IGNORECASE,
+    )
+    if not m:
+        return None
+    uen = m.group(1).strip()
+    name = m.group(2).strip()
+
+    if not _ENTITY_SUFFIX_RE.search(name):
+        tail = text[m.end():].lstrip("\n").split("\n", 1)
+        if tail:
+            cont = tail[0].strip()
+            if cont and _NAME_LINE_RE.match(cont) and _ENTITY_SUFFIX_RE.search(cont):
+                name = f"{name} {cont}"
+    return uen, _clean_entity_name(name)
+
+
+def _extract_entity_name_fallback(text: str) -> Optional[str]:
+    """
+    Last-resort scan: find the first contiguous run of all-caps name-like lines
+    that ends with a known entity suffix (PTE LTD / LLP / LIMITED / ...).
+
+    Multi-line names are stitched (the z124 cover splits names across two
+    lines, e.g. 'GOIMPACT CAPITAL PARTNERS' + '(SINGAPORE) PTE. LTD.').
+    """
+    lines = [ln.strip() for ln in text.split("\n")]
+    n = len(lines)
+    for i in range(min(n, 40)):
+        if not _NAME_LINE_RE.match(lines[i]) or _HEX_HASH_RE.match(lines[i]):
+            continue
+        # Try to stitch up to 3 consecutive name-like lines starting here.
+        j = i
+        parts: List[str] = []
+        while j < n and j - i < 3 and _NAME_LINE_RE.match(lines[j]) and not _HEX_HASH_RE.match(lines[j]):
+            parts.append(lines[j])
+            joined = " ".join(parts)
+            if _ENTITY_SUFFIX_RE.search(joined):
+                return _clean_entity_name(joined)
+            j += 1
+    return None
+
 
 def _grab(text: str, label: str, until: str = r"\n", flags=re.I) -> Optional[str]:
     m = re.search(rf"{re.escape(label)}\s*[:\n]+\s*([^\n]+)", text, flags)
@@ -245,17 +330,16 @@ def extract_bm42a(pdf_path: Path) -> CorporateProfile:
     text = _read_pdf(pdf_path)
     prof = CorporateProfile(source_files=[str(pdf_path)])
 
-    m = re.search(r"UEN\s*Entity name\s*\n([0-9A-Z]+)\s+(.+?)(?:\n|$)", text)
-    if m:
-        prof.uen = m.group(1).strip()
-        prof.entity_name = m.group(2).strip()
+    hdr = _extract_uen_and_name_from_header(text)
+    if hdr:
+        prof.uen, prof.entity_name = hdr
     else:
         um = UEN_RE.search(pdf_path.name) or UEN_RE.search(text)
         if um:
             prof.uen = um.group(1)
-        nm = re.search(r"([A-Z0-9][A-Z0-9 &'.,\-]{3,}PTE\.?\s*LTD\.?)", text)
-        if nm:
-            prof.entity_name = nm.group(1).strip()
+        name = _extract_entity_name_fallback(text)
+        if name:
+            prof.entity_name = name
 
     if v := _grab(text, "Entity type"):       prof.entity_type = v
     if v := _grab(text, "Entity status"):     prof.entity_status = v
@@ -315,9 +399,16 @@ def extract_c223(pdf_path: Path) -> CorporateProfile:
     text = _read_pdf(pdf_path)
     prof = CorporateProfile(source_files=[str(pdf_path)])
 
-    um = UEN_RE.search(text) or UEN_RE.search(pdf_path.name)
-    if um:
-        prof.uen = um.group(1)
+    hdr = _extract_uen_and_name_from_header(text)
+    if hdr:
+        prof.uen, prof.entity_name = hdr
+    else:
+        um = UEN_RE.search(text) or UEN_RE.search(pdf_path.name)
+        if um:
+            prof.uen = um.group(1)
+        name = _extract_entity_name_fallback(text)
+        if name:
+            prof.entity_name = name
 
     # Primary activity in C223
     m = re.search(r"Primary Activity\s*\n([A-Z][^()\n]*?)\s*\((\d{5})\)", text)

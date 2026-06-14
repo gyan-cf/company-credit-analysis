@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from core.ingestion import SGIngestionPipeline, classify_file
 from core.cases.case_store import CaseStore
+from core.knowledge import build_case_wiki
 
 router = APIRouter(tags=["ingestion-sg"])
 _store = CaseStore()
@@ -105,6 +106,7 @@ async def run_case_ingestion(
     _store.save_parsed(case_id, "acra_profile", result.get("profile", {}))
     _store.save_features(case_id, "fs_periods_canonical",
                         {"periods": result.get("periods", []), "summary": result.get("summary", {})})
+    wiki_summary = build_case_wiki(case_root)
 
     return {
         "case_id": case_id,
@@ -114,6 +116,11 @@ async def run_case_ingestion(
         "blocks_index": {
             "source_count": result.get("blocks_index", {}).get("source_count", 0),
             "block_count": result.get("blocks_index", {}).get("block_count", 0),
+        },
+        "knowledge": {
+            "page_count": wiki_summary.get("page_count", 0),
+            "chunk_count": wiki_summary.get("chunk_count", 0),
+            "evidence_count": wiki_summary.get("evidence_count", 0),
         },
     }
 

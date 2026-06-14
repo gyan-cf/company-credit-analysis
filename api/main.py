@@ -14,6 +14,10 @@ from api.models import CaseStatusResponse, ChatRequest, ChatResponse, CreateCase
 from api.coworker import CoworkerService
 from api.ingestion_sg import router as ingestion_sg_router
 from api.financials import router as financials_router
+from api.intake import router as intake_router, MAX_FINANCIALS_FILES
+from api.review import router as review_router
+from api.knowledge import router as knowledge_router
+from api.report import router as report_router
 from core.cases.case_store import CaseStore
 from core.pipeline.analysis_pipeline import AnalysisPipeline
 from config.config import get_config
@@ -43,6 +47,14 @@ app.add_middleware(
 app.include_router(ingestion_sg_router)
 # Per-source labelled blocks (rollup index, source manifest, PDF stream, block files)
 app.include_router(financials_router)
+# Document intake — list / preview / delete uploaded files, FY tagging
+app.include_router(intake_router)
+# Review + approval — edits to document.json with audit trail
+app.include_router(review_router)
+# Case wiki + knowledge search
+app.include_router(knowledge_router)
+# Section-by-section credit report (LLM generator + DOCX export)
+app.include_router(report_router)
 
 
 @app.get("/health")
@@ -95,6 +107,7 @@ def get_status(case_id: str):
 async def upload_file(
     case_id: str,
     source_type: str = Form(...),
+    fy: Optional[str] = Form(None),
     file: UploadFile = File(...),
 ):
     try:
@@ -102,9 +115,48 @@ async def upload_file(
     except FileNotFoundError:
         raise HTTPException(404, "Case not found")
 
+    # Enforce the Phase-1 demo limit of 5 FS uploads (one per FY).
+    if source_type == "financials":
+        raw_dir = store._case_path(case_id) / "raw" / "financials"
+        if raw_dir.exists():
+            existing = [
+                p for p in raw_dir.iterdir()
+                if p.is_file() and not p.name.startswith("_")
+                and p.suffix.lower() in (".pdf", ".xlsx", ".xls")
+            ]
+            # Replacing an existing file with the same name doesn't count
+            # against the limit, but a new filename does.
+            new_name = file.filename or "upload"
+            existing_names = {p.name for p in existing}
+            if new_name not in existing_names and len(existing) >= MAX_FINANCIALS_FILES:
+                raise HTTPException(
+                    400,
+                    f"Maximum of {MAX_FINANCIALS_FILES} financial statements per case. "
+                    "Remove an existing upload first.",
+                )
+
     content = await file.read()
     path = store.save_upload(case_id, source_type, file.filename or "upload", content)
-    return {"saved": str(path), "source_type": source_type, "filename": file.filename}
+
+    # Record FY tag + uploaded_at in the per-source metadata file so the
+    # intake endpoints surface it.
+    if fy is not None or source_type == "financials":
+        from datetime import datetime
+        from api.intake import _load_meta, _save_meta, _infer_fy
+        raw_dir = path.parent
+        meta = _load_meta(raw_dir)
+        entry = meta.get(path.name, {})
+        entry.setdefault("uploaded_at", datetime.now().isoformat())
+        if fy:
+            entry["fy"] = fy
+        elif "fy" not in entry:
+            inferred = _infer_fy(path.name)
+            if inferred:
+                entry["fy"] = inferred
+        meta[path.name] = entry
+        _save_meta(raw_dir, meta)
+
+    return {"saved": str(path), "source_type": source_type, "filename": file.filename, "fy": fy}
 
 
 @app.get("/cases/{case_id}/parsed/fs")
@@ -129,6 +181,18 @@ async def analyze_case(case_id: str, provider: Optional[str] = None):
     except FileNotFoundError:
         raise HTTPException(404, "Case not found")
 
+    # Approval gate: every extracted source must be analyst-approved before
+    # the analysis pipeline runs. Frontend should already grey out the
+    # button — this is the server-side enforcement.
+    from api.review import _load_review_summary
+    summary = _load_review_summary(case_id)
+    if not summary["ready_to_analyze"]:
+        raise HTTPException(
+            400,
+            summary.get("blocked_reason")
+            or "All extracted financial-statement sources must be approved before running analysis.",
+        )
+
     loop = asyncio.get_event_loop()
     store.update_status(case_id, "queued", 5)
 
@@ -141,6 +205,7 @@ async def analyze_case(case_id: str, provider: Optional[str] = None):
             "case_id": case_id,
             "status": "completed",
             "cards": len(result.get("assessment_summary", {}).get("cards", [])),
+            "sources_analysed": summary["total"],
         }
     except Exception as e:
         raise HTTPException(500, str(e))
