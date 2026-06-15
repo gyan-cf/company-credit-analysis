@@ -209,6 +209,34 @@ class CaseStore:
             return ""
         return path.read_text(encoding="utf-8")
 
+    # ---- Analyst notes (per-case persistent memory) ----
+
+    def load_analyst_notes(self, case_id: str) -> str:
+        """
+        Return the markdown body of cases/<id>/analyst_notes.md, or '' if the
+        analyst hasn't written any notes for this case yet.
+        """
+        path = self._case_path(case_id) / "analyst_notes.md"
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    def save_analyst_notes(self, case_id: str, content: str) -> Dict[str, Any]:
+        """
+        Replace the analyst-notes file. Returns metadata the API surfaces back
+        to the editor (size, last_updated). Empty content is allowed and
+        clears the file rather than deleting it, so the path stays stable.
+        """
+        # Ensure the case directory exists; raises if the case is unknown.
+        self.get_manifest(case_id)
+        path = self._case_path(case_id) / "analyst_notes.md"
+        path.write_text(content or "", encoding="utf-8")
+        return {
+            "case_id": case_id,
+            "length": len(content or ""),
+            "last_updated": datetime.now().isoformat(),
+        }
+
     def save_chat_message(self, case_id: str, role: str, content: str) -> None:
         history_path = self._case_path(case_id) / "chat" / "history.json"
         history = []

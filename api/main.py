@@ -4,6 +4,7 @@ FastAPI application for Company Credit Analyst.
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -285,6 +286,61 @@ def chat_stream(case_id: str, req: ChatRequest):
 @app.get("/cases/{case_id}/chat/history")
 def chat_history(case_id: str):
     return {"history": store.load_chat_history(case_id)}
+
+
+# ---- Analyst notes (per-case persistent memory injected into co-worker) ----
+
+@app.get("/cases/{case_id}/notes")
+def get_analyst_notes(case_id: str):
+    """Read the analyst-notes markdown file for a case."""
+    try:
+        store.get_manifest(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Case not found")
+    content = store.load_analyst_notes(case_id)
+    notes_path = store._case_path(case_id) / "analyst_notes.md"
+    last_updated = (
+        datetime.fromtimestamp(notes_path.stat().st_mtime).isoformat()
+        if notes_path.exists() else None
+    )
+    return {
+        "case_id": case_id,
+        "content": content,
+        "length": len(content),
+        "last_updated": last_updated,
+    }
+
+
+@app.put("/cases/{case_id}/notes")
+def put_analyst_notes(case_id: str, body: dict):
+    """
+    Replace the analyst-notes file. Body shape: {"content": "<markdown>"}.
+    Empty content clears but keeps the file. The co-worker reads notes on
+    every turn, so saves take effect on the next message.
+    """
+    try:
+        store.get_manifest(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Case not found")
+    content = body.get("content", "")
+    if not isinstance(content, str):
+        raise HTTPException(400, "content must be a string")
+    return store.save_analyst_notes(case_id, content)
+
+
+@app.get("/cases/{case_id}/coworker/suggestions")
+def coworker_suggestions(case_id: str):
+    """
+    Return 3-5 context-aware prompt suggestions for the co-worker rail.
+    Tuned to current case state: assessment status, severity of findings,
+    presence of probes, report status, ratio breaches.
+    """
+    try:
+        store.get_manifest(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Case not found")
+    from core.coworker.suggestions import build_suggestions
+    return {"suggestions": build_suggestions(case_id, store=store)}
 
 
 def run_server():

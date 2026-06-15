@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import {
   getFinancialsIndex,
@@ -50,6 +50,7 @@ function parseCellInput(raw: string): number | null {
 export default function Review() {
   const { caseId, sourceId } = useParams<{ caseId: string; sourceId?: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [index, setIndex] = useState<FinancialsIndex | null>(null)
   const [doc, setDoc] = useState<SgFsDocument | null>(null)
   const [gateSummary, setGateSummary] = useState<ReviewStatusSummary | null>(null)
@@ -112,12 +113,20 @@ export default function Review() {
     [index, sourceId],
   )
 
-  // When source switches, reset to first statement tab + first page
+  // When source switches, reset to first statement tab + first page. If a
+  // ?page= query param is present (e.g. from a co-worker citation chip),
+  // jump straight to it and make sure the PDF panel is visible.
   useEffect(() => {
     setTab('sofp')
-    setPdfPage(undefined)
+    const requestedPage = Number(searchParams.get('page'))
+    if (Number.isFinite(requestedPage) && requestedPage > 0) {
+      setPdfPage(requestedPage)
+      setPdfCollapsed(false)
+    } else {
+      setPdfPage(undefined)
+    }
     setExtractNotice('')
-  }, [sourceId])
+  }, [sourceId, searchParams])
 
   const handleSwitchSource = (sid: string) => {
     if (!caseId) return

@@ -571,6 +571,176 @@ body { min-height: 100vh; }
   display: flex;
 }
 
+/* ---- Citation chips (under assistant messages) ----------------------- */
+.coworker-citations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  margin: -0.3rem 0 0.75rem;
+  padding: 0;
+  max-width: 88%;
+}
+.coworker-citations-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  margin-right: 0.25rem;
+}
+.coworker-citation {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.55rem;
+  border: 1px solid #c7d2fe;
+  background: #f5f7ff;
+  color: #4338ca;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.coworker-citation:hover {
+  background: #eef2ff;
+  border-color: #a5b4fc;
+}
+.coworker-citation-icon {
+  font-size: 0.8rem;
+  line-height: 1;
+}
+.coworker-citation-report_section {
+  border-color: #fbbf24;
+  background: #fffbeb;
+  color: #92400e;
+}
+.coworker-citation-report_section:hover {
+  background: #fef3c7;
+  border-color: #f59e0b;
+}
+
+/* Wider chip area in fullscreen mode. */
+.coworker-rail.expanded .coworker-citations {
+  max-width: 100%;
+}
+
+/* ---- Analyst notes (in-rail) ----------------------------------------- */
+.coworker-actions button.has-notes {
+  position: relative;
+  color: #4f46e5;
+}
+.coworker-notes-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  background: #10b981;
+  border-radius: 50%;
+  border: 2px solid #fff;
+}
+
+.coworker-notes-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(15, 23, 42, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  backdrop-filter: blur(2px);
+}
+.coworker-notes-card {
+  width: min(560px, 100%);
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.35);
+  border: 1px solid #c4b5fd;
+  padding: 1.25rem 1.25rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.coworker-notes-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.coworker-notes-head strong {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #1f3a5f;
+}
+.coworker-notes-head span {
+  font-size: 0.78rem;
+  color: #64748b;
+}
+.coworker-notes-textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.65rem 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #1f2937;
+  background: #fafbfc;
+}
+.coworker-notes-textarea:focus {
+  outline: none;
+  border-color: #c7d2fe;
+  background: #fff;
+}
+.coworker-notes-error {
+  color: #991b1b;
+  font-size: 0.8rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+}
+.coworker-notes-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+.coworker-notes-actions button {
+  padding: 0.5rem 0.85rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.coworker-notes-actions button.secondary {
+  background: #fff;
+  border-color: #e2e8f0;
+  color: #475569;
+}
+.coworker-notes-actions button.secondary:hover {
+  border-color: #c7d2fe;
+  color: #4338ca;
+}
+.coworker-notes-actions button.primary {
+  background: #4338ca;
+  color: #fff;
+  border-color: #4338ca;
+}
+.coworker-notes-actions button.primary:disabled {
+  background: #cbd5e1;
+  color: #64748b;
+  border-color: #cbd5e1;
+  cursor: not-allowed;
+}
+.coworker-notes-actions button.primary:hover:not(:disabled) {
+  background: #3730a3;
+}
+
 .coworker-rail.expanded {
   width: 100%;
   height: 100%;

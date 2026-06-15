@@ -71,6 +71,7 @@ def build_case_header(
     manifest: Dict[str, Any],
     fs_analytics: Optional[Dict[str, Any]] = None,
     assessment: Optional[Dict[str, Any]] = None,
+    analyst_notes: Optional[str] = None,
 ) -> str:
     """
     Compact case-state header appended to the system prompt for each turn.
@@ -80,6 +81,10 @@ def build_case_header(
     without re-fetching the obvious facts. We deliberately do NOT dump the full
     ratio sheet or wiki here — that would blow up the prompt and remove the
     incentive to call tools.
+
+    `analyst_notes` (when present) is the persistent per-case memory the
+    analyst maintains via the rail. Treat it as load-bearing — the model
+    should defer to it over its own inferences when they conflict.
     """
     fs_analytics = fs_analytics or {}
     assessment = assessment or {}
@@ -104,11 +109,24 @@ def build_case_header(
         "analyzed": bool(cards),
     }
 
-    return (
+    parts = [
         "\n\n# Current case context (live snapshot)\n\n"
         "```json\n"
         + json.dumps(header, indent=2, ensure_ascii=False, default=str)
         + "\n```\n\n"
         "Use the tools listed in this turn to fetch any specific number, "
         "ratio, finding, or document content."
-    )
+    ]
+
+    notes = (analyst_notes or "").strip()
+    if notes:
+        parts.append(
+            "\n\n# Analyst notes for this case (persistent memory)\n\n"
+            "The analyst maintains these notes between sessions. Treat them as "
+            "authoritative — if they conflict with what a tool returns, surface "
+            "the discrepancy and ask before overriding the note. Do not "
+            "ignore them.\n\n"
+            "```markdown\n" + notes + "\n```"
+        )
+
+    return "".join(parts)

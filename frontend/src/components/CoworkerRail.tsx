@@ -1,7 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { CoworkerEvent, getChatHistory, streamChat } from '../api'
+import {
+  CoworkerCitation, CoworkerEvent, CoworkerSuggestion,
+  getAnalystNotes, getChatHistory, getCoworkerSuggestions,
+  saveAnalystNotes, streamChat,
+} from '../api'
 
 const MD_PLUGINS = [remarkGfm]
 
@@ -65,35 +70,22 @@ function CollapseIcon() {
   )
 }
 
-const suggestions = [
-  {
-    label: 'Do I need to report a ...',
-    message: 'Do I need to report any material risks to credit committee?',
-  },
-  {
-    label: 'What are the regulato...',
-    message: 'What are the regulatory considerations I should review?',
-  },
+// Fallback shown when the backend suggestions endpoint hasn't loaded yet
+// (or returns an empty list). Keep it short and case-agnostic.
+const FALLBACK_SUGGESTIONS: CoworkerSuggestion[] = [
+  { label: 'Key risks', message: 'What are the most important credit risks?' },
+  { label: 'Management probes', message: 'What questions should I ask management?' },
+  { label: 'Liquidity view', message: 'Explain the liquidity position with source references.' },
 ]
 
-const extraSuggestions = [
-  {
-    label: 'Generate audit checklist',
-    message: 'Generate an audit checklist for this case.',
-  },
-  {
-    label: 'Summarize key risks',
-    message: 'Summarize the key credit risks for this case.',
-  },
-  {
-    label: 'Draft questions',
-    message: 'Draft follow-up questions for the relationship manager.',
-  },
-  {
-    label: 'Explain ratios',
-    message: 'Explain the most important ratio movements with source references.',
-  },
-]
+function NotesIcon() {
+  return (
+    <svg className="coworker-svg" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 3h11l4 4v14H5z" />
+      <path d="M16 3v5h4M8 12h8M8 16h8M8 8h4" />
+    </svg>
+  )
+}
 
 type ToolCall = {
   id: string
@@ -106,17 +98,33 @@ type ToolCall = {
 
 type Turn =
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string; toolCalls: ToolCall[]; streaming?: boolean }
+  | { role: 'assistant'; content: string; toolCalls: ToolCall[]; citations: CoworkerCitation[]; streaming?: boolean }
 
 export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRailProps) {
+  const navigate = useNavigate()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [showAllSuggestions, setShowAllSuggestions] = useState(false)
   const [turns, setTurns] = useState<Turn[]>([])
   const [expanded, setExpanded] = useState(false)
+  const [suggestions, setSuggestions] = useState<CoworkerSuggestion[]>(FALLBACK_SUGGESTIONS)
+  const [notesContent, setNotesContent] = useState<string>('')
+  const [notesDraft, setNotesDraft] = useState<string>('')
+  const [notesOpen, setNotesOpen] = useState(false)
+  const [notesSaving, setNotesSaving] = useState(false)
+  const [notesError, setNotesError] = useState<string>('')
   const endRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const visibleSuggestions = showAllSuggestions ? [...suggestions, ...extraSuggestions] : suggestions
+  const visibleSuggestions = showAllSuggestions ? suggestions : suggestions.slice(0, 3)
+
+  // Refresh suggestions from the backend — runs on case change and after
+  // each turn completes (case state has shifted; the next-best question
+  // probably has too).
+  const refreshSuggestions = useCallback(() => {
+    getCoworkerSuggestions(caseId)
+      .then((s) => { if (s.length) setSuggestions(s) })
+      .catch(() => { /* keep current pills */ })
+  }, [caseId])
 
   // Escape to leave fullscreen; also lock background scroll while expanded.
   useEffect(() => {
@@ -144,7 +152,7 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
         const hydrated: Turn[] = (h.history || []).map((m: { role: string; content: string }) =>
           m.role === 'user'
             ? { role: 'user', content: m.content }
-            : { role: 'assistant', content: m.content, toolCalls: [] },
+            : { role: 'assistant', content: m.content, toolCalls: [], citations: [] },
         )
         setTurns(hydrated)
       })
@@ -153,7 +161,12 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
 
   useEffect(() => {
     loadHistory()
-  }, [caseId])
+    refreshSuggestions()
+    // Notes — load body once per case; the textarea draft tracks edits.
+    getAnalystNotes(caseId)
+      .then((n) => { setNotesContent(n.content || ''); setNotesDraft(n.content || '') })
+      .catch(() => { setNotesContent(''); setNotesDraft('') })
+  }, [caseId, refreshSuggestions])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -188,7 +201,7 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
     setTurns((prev) => [
       ...prev,
       { role: 'user', content: text },
-      { role: 'assistant', content: '', toolCalls: [], streaming: true },
+      { role: 'assistant', content: '', toolCalls: [], citations: [], streaming: true },
     ])
 
     const controller = new AbortController()
@@ -232,8 +245,13 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
             mutateLastAssistant((t) => ({
               ...t,
               content: event.text || t.content,
+              citations: dedupeCitations(event.citations || []),
               streaming: false,
             }))
+            // Case state has likely shifted (e.g. analyst-notes pickup
+            // or new findings touched). Refresh suggestion pills so the
+            // next-question prompts reflect the latest context.
+            refreshSuggestions()
           } else if (event.type === 'error') {
             mutateLastAssistant((t) => ({
               ...t,
@@ -283,6 +301,16 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
         <div className="coworker-actions">
           <button
             type="button"
+            className={notesContent.trim() ? 'has-notes' : ''}
+            title={notesContent.trim() ? 'Edit analyst notes (active)' : 'Add analyst notes'}
+            aria-label="Open analyst notes"
+            onClick={() => { setNotesDraft(notesContent); setNotesError(''); setNotesOpen(true) }}
+          >
+            <NotesIcon />
+            {notesContent.trim() && <span className="coworker-notes-dot" aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
             title={expanded ? 'Restore rail' : 'Expand to fullscreen'}
             aria-label={expanded ? 'Restore rail' : 'Expand to fullscreen'}
             onClick={() => setExpanded((v) => !v)}
@@ -294,6 +322,29 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
           </button>
         </div>
       </div>
+
+      {notesOpen && (
+        <NotesEditor
+          draft={notesDraft}
+          onDraftChange={setNotesDraft}
+          saving={notesSaving}
+          error={notesError}
+          onCancel={() => { setNotesOpen(false); setNotesError(''); setNotesDraft(notesContent) }}
+          onSave={async () => {
+            setNotesSaving(true)
+            setNotesError('')
+            try {
+              await saveAnalystNotes(caseId, notesDraft)
+              setNotesContent(notesDraft)
+              setNotesOpen(false)
+            } catch (e) {
+              setNotesError(String(e))
+            } finally {
+              setNotesSaving(false)
+            }
+          }}
+        />
+      )}
 
       <div className="coworker-messages">
         {turns.map((m, i) =>
@@ -312,6 +363,12 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
                   </span>
                 ) : null}
               </div>
+              {!m.streaming && m.citations.length > 0 && (
+                <CitationChips
+                  citations={m.citations}
+                  onOpen={(c) => openCitation(c, caseId, navigate)}
+                />
+              )}
             </div>
           ),
         )}
@@ -377,4 +434,163 @@ function assistantStatusText(turn: Extract<Turn, { role: 'assistant' }>): string
   if (inFlight > 0) return 'Looking up case data…'
   if (turn.toolCalls.length > 0) return 'Drafting answer…'
   return 'Thinking…'
+}
+
+// ---- Citations -------------------------------------------------------------
+
+function CitationChips({
+  citations, onOpen,
+}: { citations: CoworkerCitation[]; onOpen: (c: CoworkerCitation) => void }) {
+  // Only render citations the analyst can actually click into; muting the
+  // non-actionable ones (raw ratio paths, fs_analytics) keeps the row tight.
+  const actionable = citations.filter(isActionable)
+  if (actionable.length === 0) return null
+  return (
+    <div className="coworker-citations">
+      <span className="coworker-citations-label">Sources</span>
+      {actionable.map((c, idx) => (
+        <button
+          key={`${c.kind}-${idx}`}
+          type="button"
+          className={`coworker-citation coworker-citation-${c.kind}`}
+          onClick={() => onOpen(c)}
+          title={citationTooltip(c)}
+        >
+          <span className="coworker-citation-icon">{citationIcon(c)}</span>
+          <span className="coworker-citation-label">{citationLabel(c)}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function isActionable(c: CoworkerCitation): boolean {
+  if (c.kind === 'wiki' || c.kind === 'note') {
+    return !!(c.source_id && firstPage(c))
+  }
+  if (c.kind === 'report_section') return !!c.section_code
+  return false
+}
+
+function firstPage(c: CoworkerCitation): number | undefined {
+  if (!c.page_range) return undefined
+  const arr = c.page_range as number[]
+  if (!Array.isArray(arr) || arr.length === 0) return undefined
+  return arr[0]
+}
+
+function citationIcon(c: CoworkerCitation): string {
+  if (c.kind === 'note') return '📝'
+  if (c.kind === 'wiki') return '📄'
+  if (c.kind === 'report_section') return '📋'
+  return '🔗'
+}
+
+function citationLabel(c: CoworkerCitation): string {
+  if (c.kind === 'note') {
+    const n = c.note_no != null ? `Note ${c.note_no}` : (c.note_title || 'Note')
+    const p = firstPage(c)
+    return p ? `${n} · p.${p}` : n
+  }
+  if (c.kind === 'wiki') {
+    const file = c.source_file || c.title || 'Source'
+    const p = firstPage(c)
+    return p ? `${shorten(file, 18)} · p.${p}` : shorten(file, 22)
+  }
+  if (c.kind === 'report_section') {
+    return c.section_title || c.section_code || 'Report section'
+  }
+  return c.kind
+}
+
+function citationTooltip(c: CoworkerCitation): string {
+  if (c.kind === 'note') return `Open Note ${c.note_no ?? ''} in source ${c.source_file ?? ''}`
+  if (c.kind === 'wiki') return `Open ${c.source_file ?? 'source'} at page ${firstPage(c) ?? ''}`
+  if (c.kind === 'report_section') return `Jump to section "${c.section_title ?? c.section_code}" in the credit report`
+  return ''
+}
+
+function shorten(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
+}
+
+function openCitation(
+  c: CoworkerCitation,
+  caseId: string,
+  navigate: (to: string) => void,
+): void {
+  if ((c.kind === 'wiki' || c.kind === 'note') && c.source_id) {
+    const page = firstPage(c)
+    const qs = page ? `?page=${page}` : ''
+    navigate(`/cases/${caseId}/review/${c.source_id}${qs}`)
+    return
+  }
+  if (c.kind === 'report_section' && c.section_code) {
+    const slug = c.section_title
+      ? c.section_title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+      : c.section_code
+    navigate(`/cases/${caseId}/report#${slug}`)
+  }
+}
+
+function dedupeCitations(cs: CoworkerCitation[]): CoworkerCitation[] {
+  const seen = new Set<string>()
+  const out: CoworkerCitation[] = []
+  for (const c of cs) {
+    const k = citationDedupeKey(c)
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(c)
+  }
+  return out
+}
+
+function citationDedupeKey(c: CoworkerCitation): string {
+  if (c.kind === 'wiki' || c.kind === 'note') {
+    return `${c.kind}:${c.source_id ?? ''}:${firstPage(c) ?? ''}:${c.note_no ?? c.wiki_path ?? c.title ?? ''}`
+  }
+  if (c.kind === 'report_section') return `report_section:${c.section_code ?? ''}`
+  return `${c.kind}:${c.path ?? ''}:${c.ratio ?? c.statement ?? ''}`
+}
+
+function NotesEditor({
+  draft, onDraftChange, onSave, onCancel, saving, error,
+}: {
+  draft: string
+  onDraftChange: (v: string) => void
+  onSave: () => void
+  onCancel: () => void
+  saving: boolean
+  error: string
+}) {
+  return (
+    <div className="coworker-notes-overlay" onClick={onCancel}>
+      <div className="coworker-notes-card" onClick={(e) => e.stopPropagation()}>
+        <div className="coworker-notes-head">
+          <strong>Analyst notes</strong>
+          <span>Persistent memory the co-worker reads on every turn.</span>
+        </div>
+        <textarea
+          className="coworker-notes-textarea"
+          value={draft}
+          onChange={(e) => onDraftChange(e.target.value)}
+          placeholder={
+            'Examples:\n' +
+            '  • FY22 receivables: confirmed 272,994 (override extraction).\n' +
+            '  • Sponsor confirmed FX is hedged — do not flag FX as risk.\n' +
+            '  • Skip Note 18 — relates to a divested entity.'
+          }
+          autoFocus
+          rows={10}
+        />
+        {error && <div className="coworker-notes-error">{error}</div>}
+        <div className="coworker-notes-actions">
+          <button type="button" className="secondary" onClick={onCancel} disabled={saving}>Cancel</button>
+          <button type="button" className="primary" onClick={onSave} disabled={saving}>
+            {saving ? 'Saving…' : 'Save notes'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }

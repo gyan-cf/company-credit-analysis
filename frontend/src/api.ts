@@ -426,11 +426,39 @@ export async function sendChat(caseId: string, message: string, skill?: string) 
   return r.json();
 }
 
+export interface CoworkerCitation {
+  // Discriminator — populated by each tool. Other fields are optional and
+  // sparsely set depending on the citation source.
+  kind: 'wiki' | 'note' | 'report' | 'report_section' | 'fs_analytics'
+      | 'ratio' | 'statement' | 'assessment' | 'probes' | string;
+  // Provenance
+  source_id?: string;
+  source_file?: string;
+  page_range?: [number, number] | number[] | null;
+  wiki_path?: string;
+  // Wiki / notes
+  title?: string;
+  note_no?: string | number;
+  note_title?: string;
+  // Report sections
+  section_code?: string;
+  section_title?: string;
+  // Other metadata kept loose
+  path?: string;
+  ratio?: string;
+  statement?: string;
+  perimeter?: string;
+  fys?: string[];
+  // Routing context (added by the agent loop)
+  tool_id?: string;
+  tool?: string;
+}
+
 export type CoworkerEvent =
   | { type: 'delta'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; id: string; name: string; output: { result?: unknown; citations?: unknown[]; is_error?: boolean; error?: string }; is_error: boolean }
-  | { type: 'done'; text: string; tool_calls: unknown[]; citations: unknown[]; usage: { input_tokens: number; output_tokens: number } }
+  | { type: 'tool_result'; id: string; name: string; output: { result?: unknown; citations?: CoworkerCitation[]; is_error?: boolean; error?: string }; is_error: boolean }
+  | { type: 'done'; text: string; tool_calls: unknown[]; citations: CoworkerCitation[]; usage: { input_tokens: number; output_tokens: number } }
   | { type: 'error'; message: string };
 
 export async function streamChat(
@@ -477,6 +505,47 @@ export async function getChatHistory(caseId: string) {
   const r = await fetch(`${API}/cases/${caseId}/chat/history`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+// ---- Analyst notes (per-case persistent memory injected into co-worker) ----
+
+export interface AnalystNotes {
+  case_id: string;
+  content: string;
+  length: number;
+  last_updated: string | null;
+}
+
+export async function getAnalystNotes(caseId: string): Promise<AnalystNotes> {
+  const r = await fetch(`${API}/cases/${caseId}/notes`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function saveAnalystNotes(caseId: string, content: string): Promise<{
+  case_id: string; length: number; last_updated: string;
+}> {
+  const r = await fetch(`${API}/cases/${caseId}/notes`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ---- Dynamic co-worker suggestions ----
+
+export interface CoworkerSuggestion {
+  label: string;
+  message: string;
+}
+
+export async function getCoworkerSuggestions(caseId: string): Promise<CoworkerSuggestion[]> {
+  const r = await fetch(`${API}/cases/${caseId}/coworker/suggestions`);
+  if (!r.ok) throw new Error(await r.text());
+  const d = await r.json();
+  return d.suggestions || [];
 }
 
 // ---- Financials (per-source labelled blocks) ----

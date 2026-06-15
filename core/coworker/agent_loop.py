@@ -65,10 +65,11 @@ def run_agent_turn(
 
     fs_analytics = _store.load_features(case_id, "fs_analytics") or {}
     assessment = _store.load_assessment_summary(case_id) or {}
+    analyst_notes = _store.load_analyst_notes(case_id)
 
     system_prompt = (
         get_coworker_system_prompt()
-        + build_case_header(manifest, fs_analytics, assessment)
+        + build_case_header(manifest, fs_analytics, assessment, analyst_notes)
     )
 
     if _no_api_key():
