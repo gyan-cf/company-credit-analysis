@@ -343,6 +343,59 @@ def coworker_suggestions(case_id: str):
     return {"suggestions": build_suggestions(case_id, store=store)}
 
 
+# ---- Pending actions (write-tool confirm-before-mutate) ----
+
+@app.get("/cases/{case_id}/pending-actions/{token}")
+def get_pending_action(case_id: str, token: str):
+    """Inspect a pending action. 404 if missing / already consumed."""
+    try:
+        store.get_manifest(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Case not found")
+    from core.coworker.pending_actions import load_pending_action
+    action = load_pending_action(case_id, token, store=store)
+    if action is None:
+        raise HTTPException(404, "Pending action not found or already consumed")
+    return action.to_dict()
+
+
+@app.post("/cases/{case_id}/pending-actions/{token}/confirm")
+def confirm_pending_action(case_id: str, token: str):
+    """
+    Execute the pending action. Returns the executor result. The pending
+    file is deleted on success and one audit row is appended to
+    cases/<id>/coworker_audit.jsonl.
+    """
+    try:
+        store.get_manifest(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Case not found")
+    from core.coworker.pending_actions import execute_pending_action
+    out = execute_pending_action(case_id, token, store=store)
+    if not out.get("ok"):
+        # 404 for "not found" so the UI can distinguish a stale token from
+        # an executor failure; everything else is a 500.
+        err = out.get("error", "Unknown error")
+        if "not found" in err.lower() or "expired" in err.lower():
+            raise HTTPException(404, err)
+        raise HTTPException(500, err)
+    return out
+
+
+@app.delete("/cases/{case_id}/pending-actions/{token}")
+def cancel_pending_action_endpoint(case_id: str, token: str):
+    """Discard a pending action without executing it."""
+    try:
+        store.get_manifest(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Case not found")
+    from core.coworker.pending_actions import cancel_pending_action
+    removed = cancel_pending_action(case_id, token, store=store)
+    if not removed:
+        raise HTTPException(404, "Pending action not found or already consumed")
+    return {"ok": True, "cancelled": token}
+
+
 def run_server():
     import os
     import uvicorn

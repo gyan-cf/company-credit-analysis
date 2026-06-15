@@ -14,6 +14,16 @@ anthropic:
   max_tokens: 16000
   timeout: 120
 
+# Co-worker rail uses a more capable model than the offline analysis pipeline.
+# Haiku is fine for batch FS/Industry/Qualitative passes but tends to
+# narrate write-tool actions in text without actually invoking the tool,
+# leaving analysts with empty confirmation rails. Sonnet is ~5x the
+# per-token cost but reliably calls tools in multi-step flows.
+coworker:
+  model: claude-sonnet-4-6
+  temperature: 0.2
+  max_tokens: 16000
+
 rbi_out_of_order_proxy:
   return_rate_alert: 0.05
 

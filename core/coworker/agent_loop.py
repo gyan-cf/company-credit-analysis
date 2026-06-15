@@ -90,6 +90,12 @@ def run_agent_turn(
     citations: List[Dict[str, Any]] = []
     usage_total = {"input_tokens": 0, "output_tokens": 0}
 
+    # Co-worker uses a more capable model than the offline analysis pipeline.
+    # Falls back to the analysis-tier model when no override is configured.
+    coworker_model = _config.get("coworker.model") or None
+    coworker_temperature = _config.get("coworker.temperature")
+    coworker_max_tokens = _config.get("coworker.max_tokens")
+
     for _round in range(MAX_TOOL_ROUNDS):
         round_text = ""
         round_tool_uses: List[Dict[str, Any]] = []
@@ -100,6 +106,9 @@ def run_agent_turn(
             system=system_prompt,
             messages=messages,
             tools=TOOL_SPECS,
+            model=coworker_model,
+            temperature=coworker_temperature,
+            max_tokens=coworker_max_tokens,
         ):
             etype = event.get("type")
             if etype == "text_delta":

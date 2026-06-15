@@ -176,92 +176,21 @@ class RegenerateRequest(BaseModel):
 @router.post("/cases/{case_id}/report/sections/{section_code}/regenerate")
 def regenerate_section(case_id: str, section_code: str, req: RegenerateRequest = Body(default=RegenerateRequest())):
     """
-    Re-run the LLM for one section. Updates `latest.json` in place and
-    rewrites `latest.docx` so the download is in sync with the workspace.
+    Re-run the LLM for one section. Thin HTTP wrapper around
+    core.report.generator.regenerate_one_section, which is shared with the
+    co-worker's regenerate_report_section pending-action executor.
     """
-    from core.report.template import SECTIONS_FS_ONLY, build_section_context
-    from core.report.llm_caller import call_section_llm
-    from core.report.generator import load_case_context, normalize_section_numbers
-    from core.report.docx_writer import write_report_docx
+    from core.report.generator import regenerate_one_section
 
     case_root = _case_root(case_id)
-    section_def = next((s for s in SECTIONS_FS_ONLY if s["code"] == section_code), None)
-    if section_def is None:
-        raise HTTPException(404, f"Unknown section code: {section_code!r}")
-
-    latest_json = case_root / "reports" / "latest.json"
-    if not latest_json.exists():
-        raise HTTPException(400, "No report has been generated for this case yet.")
-
-    report = json.loads(latest_json.read_text(encoding="utf-8"))
-    context = load_case_context(case_root)
-
-    from core.report.html_renderer import markdown_to_html
-
-    if section_def.get("type") == "deterministic_table":
-        from core.report.generator import render_financial_snapshot
-        markdown = render_financial_snapshot(context)
-        new_section = {
-            "code":     section_code,
-            "number":   section_def["number"],
-            "title":    section_def["title"],
-            "markdown": markdown,
-            "html":     markdown_to_html(markdown),
-            "source":   "deterministic",
-        }
-    else:
-        prompt = build_section_context(section_def, context)
-        if req.instruction == "tighten":
-            prompt += (
-                "\n\nINSTRUCTION: Tighten the prose — keep the same structure and "
-                "evidence but cut 25-40% of the word count without losing analytical content."
-            )
-        elif req.instruction == "expand":
-            prompt += (
-                "\n\nINSTRUCTION: Expand the section — add additional analytical depth, "
-                "implications, and evidence references. Keep all original claims; do not invent figures."
-            )
-        elif req.instruction:
-            prompt += f"\n\nINSTRUCTION: {req.instruction}"
-
-        try:
-            markdown = call_section_llm(prompt)
-        except Exception as e:
-            logger.exception("Regenerate failed for section %s", section_code)
-            raise HTTPException(500, f"LLM call failed: {type(e).__name__}: {e}")
-
-        new_section = {
-            "code":     section_code,
-            "number":   section_def["number"],
-            "title":    section_def["title"],
-            "markdown": markdown,
-            "html":     markdown_to_html(markdown),
-            "source":   "llm",
-        }
-
-    # Splice into the report and persist
-    sections = report.get("sections", []) or []
-    replaced = False
-    for i, s in enumerate(sections):
-        if s.get("code") == section_code:
-            sections[i] = new_section
-            replaced = True
-            break
-    if not replaced:
-        sections.append(new_section)
-    order = {s["code"]: i for i, s in enumerate(SECTIONS_FS_ONLY)}
-    sections.sort(key=lambda s: order.get(s.get("code"), 999))
-    sections, _ = normalize_section_numbers(sections)
-    report["sections"] = sections
-    report["section_count"] = len(sections)
-    report["last_edit"] = {
-        "section": section_code,
-        "instruction": req.instruction,
-        "at": datetime.utcnow().isoformat() + "Z",
-    }
-
-    latest_json.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    latest_docx = case_root / "reports" / "latest.docx"
-    write_report_docx(report, latest_docx)
-
-    return JSONResponse({"ok": True, "section": new_section})
+    try:
+        section = regenerate_one_section(case_root, section_code, req.instruction)
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("Unknown section code"):
+            raise HTTPException(404, msg)
+        raise HTTPException(400, msg)
+    except RuntimeError as e:
+        logger.exception("Regenerate failed for section %s", section_code)
+        raise HTTPException(500, str(e))
+    return JSONResponse({"ok": True, "section": section})

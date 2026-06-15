@@ -353,6 +353,106 @@ def generate_report(
     }
 
 
+def regenerate_one_section(
+    case_root: Path,
+    section_code: str,
+    instruction: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Re-run one section of the latest credit report and persist the result.
+
+    Shared between the HTTP route in `api/report.py` and the co-worker
+    `regenerate_report_section` pending-action executor — both need exactly
+    this behaviour: pick up the section definition from the template, build
+    the prompt (optionally with an analyst-supplied instruction), call the
+    LLM (or the deterministic table renderer for the snapshot section),
+    splice the result into `reports/latest.json`, rewrite `latest.docx`.
+
+    Raises:
+        ValueError      — unknown section_code, or no report on disk yet.
+        RuntimeError    — wraps any LLM failure so the caller can surface it.
+    """
+    from core.report.template import SECTIONS_FS_ONLY, build_section_context
+    from core.report.llm_caller import call_section_llm
+    from core.report.html_renderer import markdown_to_html
+    from core.report.docx_writer import write_report_docx
+
+    section_def = next((s for s in SECTIONS_FS_ONLY if s["code"] == section_code), None)
+    if section_def is None:
+        raise ValueError(f"Unknown section code: {section_code!r}")
+
+    latest_json = case_root / "reports" / "latest.json"
+    if not latest_json.exists():
+        raise ValueError("No report has been generated for this case yet.")
+
+    report = json.loads(latest_json.read_text(encoding="utf-8"))
+    context = load_case_context(case_root)
+
+    if section_def.get("type") == "deterministic_table":
+        markdown = render_financial_snapshot(context)
+        new_section = {
+            "code":     section_code,
+            "number":   section_def["number"],
+            "title":    section_def["title"],
+            "markdown": markdown,
+            "html":     markdown_to_html(markdown),
+            "source":   "deterministic",
+        }
+    else:
+        prompt = build_section_context(section_def, context)
+        if instruction == "tighten":
+            prompt += (
+                "\n\nINSTRUCTION: Tighten the prose — keep the same structure and "
+                "evidence but cut 25-40% of the word count without losing analytical content."
+            )
+        elif instruction == "expand":
+            prompt += (
+                "\n\nINSTRUCTION: Expand the section — add additional analytical depth, "
+                "implications, and evidence references. Keep all original claims; do not invent figures."
+            )
+        elif instruction:
+            prompt += f"\n\nINSTRUCTION: {instruction}"
+
+        try:
+            markdown = call_section_llm(prompt)
+        except Exception as e:
+            logger.exception("Regenerate failed for section %s", section_code)
+            raise RuntimeError(f"LLM call failed: {type(e).__name__}: {e}") from e
+
+        new_section = {
+            "code":     section_code,
+            "number":   section_def["number"],
+            "title":    section_def["title"],
+            "markdown": markdown,
+            "html":     markdown_to_html(markdown),
+            "source":   "llm",
+        }
+
+    sections = report.get("sections", []) or []
+    replaced = False
+    for i, s in enumerate(sections):
+        if s.get("code") == section_code:
+            sections[i] = new_section
+            replaced = True
+            break
+    if not replaced:
+        sections.append(new_section)
+    order = {s["code"]: i for i, s in enumerate(SECTIONS_FS_ONLY)}
+    sections.sort(key=lambda s: order.get(s.get("code"), 999))
+    sections, _ = normalize_section_numbers(sections)
+    report["sections"] = sections
+    report["section_count"] = len(sections)
+    report["last_edit"] = {
+        "section": section_code,
+        "instruction": instruction,
+        "at": datetime.utcnow().isoformat() + "Z",
+    }
+
+    latest_json.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    write_report_docx(report, case_root / "reports" / "latest.docx")
+    return new_section
+
+
 def persist_report(case_root: Path, report: Dict[str, Any]) -> Dict[str, Path]:
     """Write the report to disk in both JSON and DOCX formats."""
     from .docx_writer import write_report_docx

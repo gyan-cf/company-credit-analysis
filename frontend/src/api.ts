@@ -548,6 +548,44 @@ export async function getCoworkerSuggestions(caseId: string): Promise<CoworkerSu
   return d.suggestions || [];
 }
 
+// ---- Pending actions (preview-then-confirm for write-side tools) ----
+
+export interface PendingActionInfo {
+  token: string;
+  case_id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  description: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface PendingActionResult {
+  ok: boolean;
+  kind?: string;
+  result?: {
+    summary?: string;
+    file?: string;
+    [k: string]: unknown;
+  };
+  error?: string;
+}
+
+export async function confirmPendingAction(caseId: string, token: string): Promise<PendingActionResult> {
+  const r = await fetch(`${API}/cases/${caseId}/pending-actions/${token}/confirm`, {
+    method: 'POST',
+  });
+  if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`));
+  return r.json();
+}
+
+export async function cancelPendingAction(caseId: string, token: string): Promise<void> {
+  const r = await fetch(`${API}/cases/${caseId}/pending-actions/${token}`, {
+    method: 'DELETE',
+  });
+  if (!r.ok) throw new Error(await r.text().catch(() => `HTTP ${r.status}`));
+}
+
 // ---- Financials (per-source labelled blocks) ----
 
 export interface FinancialsSource {

@@ -4,9 +4,20 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   CoworkerCitation, CoworkerEvent, CoworkerSuggestion,
+  cancelPendingAction, confirmPendingAction,
   getAnalystNotes, getChatHistory, getCoworkerSuggestions,
   saveAnalystNotes, streamChat,
 } from '../api'
+
+type PendingAction = {
+  token: string
+  kind: string
+  description: string
+  payload: Record<string, unknown>
+  status: 'pending' | 'approving' | 'approved' | 'cancelling' | 'cancelled' | 'failed'
+  resultSummary?: string
+  error?: string
+}
 
 const MD_PLUGINS = [remarkGfm]
 
@@ -98,7 +109,7 @@ type ToolCall = {
 
 type Turn =
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string; toolCalls: ToolCall[]; citations: CoworkerCitation[]; streaming?: boolean }
+  | { role: 'assistant'; content: string; toolCalls: ToolCall[]; citations: CoworkerCitation[]; pendingActions: PendingAction[]; streaming?: boolean }
 
 export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRailProps) {
   const navigate = useNavigate()
@@ -152,7 +163,7 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
         const hydrated: Turn[] = (h.history || []).map((m: { role: string; content: string }) =>
           m.role === 'user'
             ? { role: 'user', content: m.content }
-            : { role: 'assistant', content: m.content, toolCalls: [], citations: [] },
+            : { role: 'assistant', content: m.content, toolCalls: [], citations: [], pendingActions: [] },
         )
         setTurns(hydrated)
       })
@@ -193,6 +204,47 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
     })
   }
 
+  // Mutate one pending action by token, anywhere in the conversation.
+  const updatePendingAction = (token: string, patch: Partial<PendingAction>) => {
+    setTurns((prev) => prev.map((t) =>
+      t.role !== 'assistant' ? t : {
+        ...t,
+        pendingActions: t.pendingActions.map((pa) =>
+          pa.token === token ? { ...pa, ...patch } : pa,
+        ),
+      },
+    ))
+  }
+
+  const approveAction = async (action: PendingAction) => {
+    updatePendingAction(action.token, { status: 'approving', error: undefined })
+    try {
+      const r = await confirmPendingAction(caseId, action.token)
+      if (!r.ok) {
+        updatePendingAction(action.token, { status: 'failed', error: r.error || 'Action failed' })
+        return
+      }
+      updatePendingAction(action.token, {
+        status: 'approved',
+        resultSummary: r.result?.summary || `Applied ${action.kind}`,
+      })
+      // Case state has shifted (notes/annotations/report); refresh suggestions.
+      refreshSuggestions()
+    } catch (e) {
+      updatePendingAction(action.token, { status: 'failed', error: String(e) })
+    }
+  }
+
+  const dismissAction = async (action: PendingAction) => {
+    updatePendingAction(action.token, { status: 'cancelling' })
+    try {
+      await cancelPendingAction(caseId, action.token)
+      updatePendingAction(action.token, { status: 'cancelled' })
+    } catch (e) {
+      updatePendingAction(action.token, { status: 'failed', error: String(e) })
+    }
+  }
+
   const ask = async (message?: string) => {
     const text = (message || input).trim()
     if (!text || busy) return
@@ -201,7 +253,7 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
     setTurns((prev) => [
       ...prev,
       { role: 'user', content: text },
-      { role: 'assistant', content: '', toolCalls: [], citations: [], streaming: true },
+      { role: 'assistant', content: '', toolCalls: [], citations: [], pendingActions: [], streaming: true },
     ])
 
     const controller = new AbortController()
@@ -228,6 +280,9 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
               ],
             }))
           } else if (event.type === 'tool_result') {
+            // Detect preview tool results — these are write-side tools that
+            // staged a pending action. Surface as a confirmation card.
+            const preview = !event.is_error ? extractPreview(event.output?.result) : null
             mutateLastAssistant((t) => ({
               ...t,
               toolCalls: t.toolCalls.map((tc) =>
@@ -240,6 +295,9 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
                     }
                   : tc,
               ),
+              pendingActions: preview
+                ? [...t.pendingActions, { ...preview, status: 'pending' as const }]
+                : t.pendingActions,
             }))
           } else if (event.type === 'done') {
             mutateLastAssistant((t) => ({
@@ -363,6 +421,18 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
                   </span>
                 ) : null}
               </div>
+              {!m.streaming && m.pendingActions.length > 0 && (
+                <div className="coworker-actions-stack">
+                  {m.pendingActions.map((pa) => (
+                    <PendingActionCard
+                      key={pa.token}
+                      action={pa}
+                      onApprove={() => approveAction(pa)}
+                      onDismiss={() => dismissAction(pa)}
+                    />
+                  ))}
+                </div>
+              )}
               {!m.streaming && m.citations.length > 0 && (
                 <CitationChips
                   citations={m.citations}
@@ -434,6 +504,127 @@ function assistantStatusText(turn: Extract<Turn, { role: 'assistant' }>): string
   if (inFlight > 0) return 'Looking up case data…'
   if (turn.toolCalls.length > 0) return 'Drafting answer…'
   return 'Thinking…'
+}
+
+// ---- Pending actions (preview-then-confirm) ------------------------------
+
+function extractPreview(result: unknown): {
+  token: string; kind: string; description: string; payload: Record<string, unknown>;
+} | null {
+  if (!result || typeof result !== 'object') return null
+  const r = result as Record<string, unknown>
+  if (r.preview !== true) return null
+  const token = typeof r.token === 'string' ? r.token : ''
+  const kind = typeof r.kind === 'string' ? r.kind : ''
+  if (!token || !kind) return null
+  return {
+    token,
+    kind,
+    description: typeof r.description === 'string' ? r.description : kind,
+    payload: (r.payload as Record<string, unknown>) || {},
+  }
+}
+
+const ACTION_KIND_LABELS: Record<string, { label: string; verb: string }> = {
+  flag_for_committee: { label: 'Committee note', verb: 'Flag for committee' },
+  annotate_finding: { label: 'Finding annotation', verb: 'Add annotation' },
+  regenerate_report_section: { label: 'Report regenerate', verb: 'Regenerate section' },
+}
+
+function PendingActionCard({
+  action, onApprove, onDismiss,
+}: {
+  action: PendingAction
+  onApprove: () => void
+  onDismiss: () => void
+}) {
+  const kindMeta = ACTION_KIND_LABELS[action.kind] || { label: action.kind, verb: 'Apply' }
+  const settled = action.status === 'approved' || action.status === 'cancelled'
+  const working = action.status === 'approving' || action.status === 'cancelling'
+
+  return (
+    <div className={`coworker-action-card status-${action.status}`}>
+      <div className="coworker-action-head">
+        <span className="coworker-action-kind">{kindMeta.label}</span>
+        <span className={`coworker-action-status status-${action.status}`}>
+          {statusLabel(action.status)}
+        </span>
+      </div>
+      <div className="coworker-action-desc">{action.description}</div>
+      {action.payload && Object.keys(action.payload).length > 0 && (
+        <ActionPayloadPreview kind={action.kind} payload={action.payload} />
+      )}
+      {action.error && <div className="coworker-action-error">{action.error}</div>}
+      {action.status === 'approved' && action.resultSummary && (
+        <div className="coworker-action-summary">✓ {action.resultSummary}</div>
+      )}
+      {!settled && (
+        <div className="coworker-action-buttons">
+          <button
+            type="button"
+            className="coworker-action-cancel"
+            disabled={working}
+            onClick={onDismiss}
+          >Cancel</button>
+          <button
+            type="button"
+            className="coworker-action-approve"
+            disabled={working}
+            onClick={onApprove}
+          >
+            {action.status === 'approving' ? 'Applying…' : `Approve · ${kindMeta.verb}`}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function statusLabel(s: PendingAction['status']): string {
+  switch (s) {
+    case 'pending': return 'Awaiting approval'
+    case 'approving': return 'Applying…'
+    case 'approved': return 'Applied'
+    case 'cancelling': return 'Cancelling…'
+    case 'cancelled': return 'Cancelled'
+    case 'failed': return 'Failed'
+  }
+}
+
+function ActionPayloadPreview({
+  kind, payload,
+}: { kind: string; payload: Record<string, unknown> }) {
+  // Render a kind-specific preview when we know the shape; fall back to a
+  // generic key/value list otherwise.
+  if (kind === 'flag_for_committee' && typeof payload.message === 'string') {
+    return <blockquote className="coworker-action-preview">{payload.message}</blockquote>
+  }
+  if (kind === 'annotate_finding') {
+    const card = payload.card_id as string | undefined
+    const risk = payload.risk_id as string | undefined
+    const comment = payload.comment as string | undefined
+    return (
+      <div className="coworker-action-preview">
+        <div className="coworker-action-preview-meta">
+          <strong>{card || '—'}</strong>{risk ? ` · ${risk}` : ''}
+        </div>
+        {comment && <blockquote>{comment}</blockquote>}
+      </div>
+    )
+  }
+  if (kind === 'regenerate_report_section') {
+    const code = payload.section_code as string | undefined
+    const instruction = payload.instruction as string | undefined
+    return (
+      <div className="coworker-action-preview">
+        <div className="coworker-action-preview-meta">
+          Section: <code>{code}</code>
+        </div>
+        {instruction && <div>Instruction: <em>{instruction}</em></div>}
+      </div>
+    )
+  }
+  return null
 }
 
 // ---- Citations -------------------------------------------------------------

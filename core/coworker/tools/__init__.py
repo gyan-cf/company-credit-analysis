@@ -16,13 +16,15 @@ from __future__ import annotations
 import traceback
 from typing import Any, Callable, Dict, List
 
-from . import findings, fs, knowledge, report
+from . import actions, findings, fs, knowledge, report
 
 
 # Order here is the order the model sees the tools in the prompt.
 # Grouped roughly by intent: spread / ratio / statement → knowledge → report →
-# assessment findings. Within each family, the cheapest / most general tool
-# comes first so the model is biased toward it for open-ended questions.
+# assessment findings → write actions. Within each family, the cheapest /
+# most general tool comes first so the model is biased toward it for open-
+# ended questions. Write tools are last so they're not the model's first
+# instinct on ambiguous asks.
 _TOOLS: List[Dict[str, Any]] = [
     {"spec": fs.GET_FINANCIAL_SUMMARY_SPEC, "call": fs.get_financial_summary},
     {"spec": fs.GET_RATIO_SPEC,             "call": fs.get_ratio},
@@ -33,6 +35,10 @@ _TOOLS: List[Dict[str, Any]] = [
     {"spec": report.GET_REPORT_SECTION_SPEC,   "call": report.get_report_section},
     {"spec": findings.LIST_RED_FLAGS_SPEC,        "call": findings.list_red_flags},
     {"spec": findings.DRAFT_PROBE_QUESTIONS_SPEC, "call": findings.draft_probe_questions},
+    # Write-side tools — all create pending actions, never mutate inline.
+    {"spec": actions.FLAG_FOR_COMMITTEE_SPEC,          "call": actions.flag_for_committee},
+    {"spec": actions.ANNOTATE_FINDING_SPEC,            "call": actions.annotate_finding},
+    {"spec": actions.REGENERATE_REPORT_SECTION_SPEC,   "call": actions.regenerate_report_section},
 ]
 
 TOOL_SPECS: List[Dict[str, Any]] = [t["spec"] for t in _TOOLS]
