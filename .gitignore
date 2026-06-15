@@ -30,6 +30,9 @@ dist/
 # Anchored to repo root — must NOT match core/cases/ which is source code.
 /cases/
 /output/
+# Underscore-prefixed debug captures dropped at the repo root by ad-hoc
+# scripts (e.g. _ufs_agentic.json from agentic-extract debugging).
+/_*.json
 
 # ----- Repo-specific large or local-only directories -----
 /legacy/
