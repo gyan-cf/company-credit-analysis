@@ -39,6 +39,8 @@ _TOOLS: List[Dict[str, Any]] = [
     {"spec": actions.FLAG_FOR_COMMITTEE_SPEC,          "call": actions.flag_for_committee},
     {"spec": actions.ANNOTATE_FINDING_SPEC,            "call": actions.annotate_finding},
     {"spec": actions.REGENERATE_REPORT_SECTION_SPEC,   "call": actions.regenerate_report_section},
+    {"spec": actions.OVERRIDE_EXTRACTED_VALUE_SPEC,    "call": actions.override_extracted_value},
+    {"spec": actions.RERUN_ANALYSIS_SPEC,              "call": actions.rerun_analysis},
 ]
 
 TOOL_SPECS: List[Dict[str, Any]] = [t["spec"] for t in _TOOLS]

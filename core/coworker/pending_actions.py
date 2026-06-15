@@ -317,10 +317,156 @@ def _execute_regenerate_report_section(case_id: str, payload: Dict[str, Any], st
     }
 
 
+def _execute_override_extracted_value(
+    case_id: str, payload: Dict[str, Any], store: CaseStore,
+) -> Dict[str, Any]:
+    """
+    Resolve (source_id, statement, canonical_code, perimeter, fy) to a
+    JSON-Pointer-ish path inside document.json and patch the cell in place,
+    appending the audit row that the review dashboard already consumes.
+    """
+    import json as _json
+    from core.cases.document_patch import patch_document_cell
+
+    source_id = (payload.get("source_id") or "").strip()
+    statement = (payload.get("statement") or "").strip().lower()
+    canonical_code = (payload.get("canonical_code") or "").strip()
+    perimeter = (payload.get("perimeter") or "company").strip().lower()
+    fy = (payload.get("fy") or "").strip()
+    new_value = payload.get("value")
+    reason = (payload.get("reason") or "Overridden via co-worker").strip()
+
+    if not source_id:
+        raise ValueError("override_extracted_value requires 'source_id'.")
+    if statement not in ("sofp", "soci", "socf"):
+        raise ValueError("override_extracted_value 'statement' must be sofp / soci / socf.")
+    if not canonical_code:
+        raise ValueError("override_extracted_value requires 'canonical_code'.")
+    if not fy:
+        raise ValueError("override_extracted_value requires 'fy' (e.g. 'FY2024').")
+    if perimeter not in ("company", "group"):
+        raise ValueError("'perimeter' must be 'company' or 'group'.")
+    if new_value is not None and not isinstance(new_value, (int, float)):
+        raise ValueError("'value' must be numeric or null.")
+
+    src_dir = store._case_path(case_id) / "parsed" / "financials" / source_id
+    if not src_dir.exists():
+        raise ValueError(f"Source '{source_id}' not found for case {case_id}.")
+    doc_path = src_dir / "document.json"
+    if not doc_path.exists():
+        raise ValueError(f"document.json missing under {src_dir}.")
+    doc = _json.loads(doc_path.read_text(encoding="utf-8"))
+
+    blocks = doc.get("blocks") or []
+    block_idx = next(
+        (i for i, b in enumerate(blocks)
+         if b.get("kind") == "statement" and (b.get("type") or "").lower() == statement),
+        None,
+    )
+    if block_idx is None:
+        raise ValueError(f"No {statement} statement block in source {source_id}.")
+    block = blocks[block_idx]
+    column_id = next(
+        (c.get("id") for c in (block.get("columns") or [])
+         if (c.get("perimeter") or "").lower() == perimeter and (c.get("fy") or "") == fy),
+        None,
+    )
+    if column_id is None:
+        available = [
+            f"{(c.get('perimeter') or '')}/{c.get('fy') or ''}"
+            for c in (block.get("columns") or [])
+        ]
+        raise ValueError(
+            f"No column for perimeter={perimeter} fy={fy} in {statement}. "
+            f"Available: {available}"
+        )
+    row_idx = next(
+        (i for i, r in enumerate(block.get("rows") or [])
+         if (r.get("canonical_code") or "") == canonical_code),
+        None,
+    )
+    if row_idx is None:
+        labels = [
+            (r.get("canonical_code"), r.get("label"))
+            for r in (block.get("rows") or [])
+            if r.get("canonical_code")
+        ][:20]
+        raise ValueError(
+            f"No row with canonical_code={canonical_code!r} in {statement} for source {source_id}. "
+            f"Sample available: {labels}"
+        )
+
+    row = block["rows"][row_idx]
+    row_label = row.get("label") or canonical_code
+    path = ["blocks", block_idx, "rows", row_idx, "values", column_id]
+
+    entry = patch_document_cell(
+        src_dir, path, new_value, user="coworker", reason=reason,
+    )
+
+    return {
+        "summary": (
+            f"Overrode {row_label} ({canonical_code}) "
+            f"[{perimeter}/{fy}] in {source_id}: "
+            f"{entry['old_value']} → {entry['new_value']}"
+        ),
+        "source_id": source_id,
+        "statement": statement,
+        "canonical_code": canonical_code,
+        "row_label": row_label,
+        "perimeter": perimeter,
+        "fy": fy,
+        "column_id": column_id,
+        "old_value": entry["old_value"],
+        "new_value": entry["new_value"],
+        "path": entry["path"],
+    }
+
+
+def _execute_rerun_analysis(
+    case_id: str, payload: Dict[str, Any], store: CaseStore,
+) -> Dict[str, Any]:
+    """
+    Re-run the full analysis pipeline for this case. Spawns the run in the
+    shared ThreadPoolExecutor from api/main so the HTTP request returns
+    quickly; the existing case-status indicator surfaces progress.
+
+    Audit row records that the re-run was queued, not that it finished —
+    completion happens off-thread and the analyst tracks it via the case
+    status banner / poll loop.
+    """
+    reason = (payload.get("reason") or "").strip()
+
+    # Lazy import to avoid pulling the FastAPI app into this module's import
+    # graph (would cause a circular dependency at startup).
+    from api.main import executor, pipeline
+
+    store.update_status(case_id, "queued", 5)
+
+    def _run() -> None:
+        try:
+            pipeline.run(case_id)
+        except Exception as e:  # noqa: BLE001
+            store.update_status(case_id, "failed", 0, error=str(e))
+
+    executor.submit(_run)
+    return {
+        "summary": (
+            "Re-analysis queued"
+            + (f" — reason: {reason}" if reason else "")
+            + ". Watch the case-status indicator for progress."
+        ),
+        "queued": True,
+        "reason": reason or None,
+    }
+
+
 _EXECUTORS: Dict[str, Callable[[str, Dict[str, Any], CaseStore], Dict[str, Any]]] = {
     "flag_for_committee": _execute_flag_for_committee,
     "annotate_finding": _execute_annotate_finding,
     "regenerate_report_section": _execute_regenerate_report_section,
+    "override_extracted_value": _execute_override_extracted_value,
+    "rerun_analysis": _execute_rerun_analysis,
 }
 
 

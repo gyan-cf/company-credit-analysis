@@ -529,6 +529,8 @@ const ACTION_KIND_LABELS: Record<string, { label: string; verb: string }> = {
   flag_for_committee: { label: 'Committee note', verb: 'Flag for committee' },
   annotate_finding: { label: 'Finding annotation', verb: 'Add annotation' },
   regenerate_report_section: { label: 'Report regenerate', verb: 'Regenerate section' },
+  override_extracted_value: { label: 'FS value override', verb: 'Override value' },
+  rerun_analysis: { label: 'Re-run analysis', verb: 'Queue re-run' },
 }
 
 function PendingActionCard({
@@ -621,6 +623,35 @@ function ActionPayloadPreview({
           Section: <code>{code}</code>
         </div>
         {instruction && <div>Instruction: <em>{instruction}</em></div>}
+      </div>
+    )
+  }
+  if (kind === 'override_extracted_value') {
+    const code = payload.canonical_code as string | undefined
+    const stmt = payload.statement as string | undefined
+    const fy = payload.fy as string | undefined
+    const perimeter = payload.perimeter as string | undefined
+    const sid = payload.source_id as string | undefined
+    const value = payload.value
+    const reason = payload.reason as string | undefined
+    return (
+      <div className="coworker-action-preview">
+        <div className="coworker-action-preview-meta">
+          <code>{code}</code> · {stmt}/{perimeter} · {fy}
+          {sid && <span> · source <code>{sid.slice(0, 8)}…</code></span>}
+        </div>
+        <div>New value: <strong>{value == null ? '—' : String(value)}</strong></div>
+        {reason && <div className="coworker-action-preview-meta">Reason: {reason}</div>}
+      </div>
+    )
+  }
+  if (kind === 'rerun_analysis') {
+    const reason = payload.reason as string | undefined
+    return (
+      <div className="coworker-action-preview">
+        <div>Re-runs the full pipeline (FS + Industry + Qualitative agents → assessment → memo).</div>
+        <div className="coworker-action-preview-meta">~30-60s; tracks via the case-status indicator.</div>
+        {reason && <blockquote>{reason}</blockquote>}
       </div>
     )
   }

@@ -29,6 +29,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core.cases.case_store import CaseStore
+from core.cases.document_patch import (
+    DocumentPatchError,
+    append_audit,
+    load_audits,
+    set_at_path,
+)
 
 
 router = APIRouter(tags=["review"])
@@ -48,50 +54,6 @@ def _source_dir(case_id: str, source_id: str) -> Path:
     return src
 
 
-def _walk_path(obj: Any, path: List[Any]) -> Any:
-    """Walk `obj` along `path` (list of dict keys + array indices)."""
-    cur = obj
-    for step in path:
-        if isinstance(cur, dict):
-            if step not in cur:
-                raise HTTPException(400, f"Path step {step!r} not in dict at {path}")
-            cur = cur[step]
-        elif isinstance(cur, list):
-            try:
-                idx = int(step)
-            except (TypeError, ValueError):
-                raise HTTPException(400, f"Path step {step!r} is not a list index at {path}")
-            if idx < 0 or idx >= len(cur):
-                raise HTTPException(400, f"Index {idx} out of range at {path}")
-            cur = cur[idx]
-        else:
-            raise HTTPException(400, f"Cannot descend into {type(cur).__name__} at {path}")
-    return cur
-
-
-def _set_at_path(obj: Any, path: List[Any], value: Any) -> Any:
-    """Return the old value, mutating `obj` in place to set `path` to `value`."""
-    if not path:
-        raise HTTPException(400, "Empty path")
-    parent = _walk_path(obj, path[:-1])
-    last = path[-1]
-    if isinstance(parent, dict):
-        old = parent.get(last)
-        parent[last] = value
-        return old
-    if isinstance(parent, list):
-        try:
-            idx = int(last)
-        except (TypeError, ValueError):
-            raise HTTPException(400, f"Path tail {last!r} is not a list index")
-        if idx < 0 or idx >= len(parent):
-            raise HTTPException(400, f"Index {idx} out of range")
-        old = parent[idx]
-        parent[idx] = value
-        return old
-    raise HTTPException(400, f"Cannot set inside {type(parent).__name__}")
-
-
 # ---- Request models -----------------------------------------------------------
 
 class DocumentEditRequest(BaseModel):
@@ -104,28 +66,6 @@ class DocumentEditRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     notes: Optional[str] = None
     user: Optional[str] = None
-
-
-# ---- Audit log helpers --------------------------------------------------------
-
-def _audit_path(src: Path) -> Path:
-    return src / "document.audits.json"
-
-
-def _load_audits(src: Path) -> List[Dict[str, Any]]:
-    p = _audit_path(src)
-    if not p.exists():
-        return []
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
-
-
-def _append_audit(src: Path, entry: Dict[str, Any]) -> None:
-    audits = _load_audits(src)
-    audits.append(entry)
-    _audit_path(src).write_text(json.dumps(audits, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 # ---- Approval state helpers ---------------------------------------------------
@@ -166,38 +106,39 @@ def _update_rollup_index(case_id: str, source_id: str, review: Dict[str, Any]) -
 def edit_document(case_id: str, source_id: str, req: DocumentEditRequest):
     """Apply a targeted edit to document.json + append an audit entry."""
     src = _source_dir(case_id, source_id)
-    doc_path = src / "document.json"
-    if not doc_path.exists():
-        raise HTTPException(404, "document.json missing for this source")
-    doc = json.loads(doc_path.read_text(encoding="utf-8"))
-
     if not req.path:
         raise HTTPException(400, "path is required")
 
-    old = _set_at_path(doc, list(req.path), req.value)
-    doc_path.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    from core.cases.document_patch import patch_document_cell
 
-    entry = {
-        "at":       datetime.now().isoformat(),
-        "user":     req.user or "analyst",
-        "path":     list(req.path),
-        "old_value": old,
-        "new_value": req.value,
-        "reason":   req.reason,
-    }
-    _append_audit(src, entry)
+    try:
+        entry = patch_document_cell(
+            src,
+            list(req.path),
+            req.value,
+            user=req.user or "analyst",
+            reason=req.reason,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except DocumentPatchError as e:
+        raise HTTPException(400, str(e))
 
+    # The route's response shape historically returned the full document
+    # body — preserve that for the existing frontend consumers.
+    doc = json.loads((src / "document.json").read_text(encoding="utf-8"))
     return JSONResponse({"ok": True, "audit": entry, "document": doc})
 
 
 @router.get("/cases/{case_id}/sources/{source_id}/audits")
 def get_audits(case_id: str, source_id: str):
     src = _source_dir(case_id, source_id)
+    audits = load_audits(src)
     return JSONResponse({
         "case_id":   case_id,
         "source_id": source_id,
-        "count":     len(_load_audits(src)),
-        "audits":    _load_audits(src),
+        "count":     len(audits),
+        "audits":    audits,
     })
 
 

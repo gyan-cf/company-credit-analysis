@@ -209,3 +209,160 @@ def regenerate_report_section(
         description += f" — instruction: \"{instruction[:80]}{'…' if len(instruction) > 80 else ''}\""
     payload = {"section_code": section_code, "instruction": instruction}
     return _preview(case_id, "regenerate_report_section", payload, description)
+
+
+# ---- override_extracted_value ----------------------------------------------
+
+OVERRIDE_EXTRACTED_VALUE_SPEC: Dict[str, Any] = {
+    "name": "override_extracted_value",
+    "description": (
+        "Stage a correction to a single extracted financial-statement cell "
+        "(e.g. 'fix FY22 Cash and Cash Equivalents to 1,566,827 in source "
+        "<id>'). Call this — do NOT just describe the override in text — "
+        "when the analyst spots a misread value during review and wants "
+        "the corrected number written back. Stages a pending action; on "
+        "Approve, the cell is patched in the per-source document.json and "
+        "an audit row is appended to document.audits.json (same audit "
+        "trail the review dashboard uses). The analyst's downstream "
+        "analytics will not auto-refresh — use rerun_analysis afterwards "
+        "if the override is material."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "source_id": {
+                "type": "string",
+                "description": (
+                    "Source PDF id — first 12 hex chars of the SHA-256. "
+                    "Look it up via search_knowledge citations or "
+                    "list_red_flags if you don't know it."
+                ),
+            },
+            "statement": {
+                "type": "string",
+                "enum": ["sofp", "soci", "socf"],
+                "description": (
+                    "sofp = balance sheet, soci = P&L / OCI, socf = cash flow."
+                ),
+            },
+            "canonical_code": {
+                "type": "string",
+                "description": (
+                    "Canonical line-item code, e.g. bs_cash, "
+                    "bs_trade_other_recv, pl_revenue. Use get_statement to "
+                    "look up the code when the analyst names the line in "
+                    "human terms."
+                ),
+            },
+            "fy": {
+                "type": "string",
+                "description": "Financial year tag, e.g. 'FY2024'.",
+            },
+            "value": {
+                "type": ["number", "null"],
+                "description": (
+                    "The corrected numeric value. Pass null to clear the "
+                    "cell (rare — usually the analyst wants a new number)."
+                ),
+            },
+            "perimeter": {
+                "type": "string",
+                "enum": ["company", "group"],
+                "description": "Reporting perimeter. Defaults to company.",
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Short reason for the override (goes into the audit "
+                    "row). E.g. 'misread — confirmed with sponsor', "
+                    "'OCR misalignment'."
+                ),
+            },
+        },
+        "required": ["source_id", "statement", "canonical_code", "fy", "value"],
+    },
+}
+
+
+def override_extracted_value(
+    case_id: str,
+    source_id: str,
+    statement: str,
+    canonical_code: str,
+    fy: str,
+    value: Optional[float],
+    perimeter: str = "company",
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    source_id = (source_id or "").strip()
+    statement = (statement or "").strip().lower()
+    canonical_code = (canonical_code or "").strip()
+    fy = (fy or "").strip()
+    perimeter = (perimeter or "company").strip().lower()
+    reason = (reason or "").strip() or None
+
+    if not source_id:
+        return {"is_error": True, "error": "override_extracted_value requires 'source_id'."}
+    if statement not in ("sofp", "soci", "socf"):
+        return {"is_error": True, "error": "'statement' must be sofp / soci / socf."}
+    if not canonical_code:
+        return {"is_error": True, "error": "override_extracted_value requires 'canonical_code'."}
+    if not fy:
+        return {"is_error": True, "error": "override_extracted_value requires 'fy'."}
+    if perimeter not in ("company", "group"):
+        return {"is_error": True, "error": "'perimeter' must be 'company' or 'group'."}
+
+    description = (
+        f"Override {canonical_code} [{perimeter}/{fy}] in source {source_id} → "
+        f"{value if value is not None else 'null'}"
+    )
+    payload = {
+        "source_id": source_id,
+        "statement": statement,
+        "canonical_code": canonical_code,
+        "perimeter": perimeter,
+        "fy": fy,
+        "value": value,
+        "reason": reason,
+    }
+    return _preview(case_id, "override_extracted_value", payload, description)
+
+
+# ---- rerun_analysis -------------------------------------------------------
+
+RERUN_ANALYSIS_SPEC: Dict[str, Any] = {
+    "name": "rerun_analysis",
+    "description": (
+        "Stage a re-run of the full analysis pipeline for this case (ingest "
+        "→ analytics → FS / Industry / Qualitative agents → assessment + "
+        "memo). Call this — do NOT just describe the rerun in text — when "
+        "the analyst has materially changed input data (e.g. after an "
+        "override_extracted_value) and wants the downstream cards / memo / "
+        "report to reflect it. Takes ~30-60 seconds; the executor returns "
+        "immediately and the analyst tracks progress via the case-status "
+        "indicator. Use sparingly — only when something material has "
+        "changed since the last run."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Short reason for the rerun (recorded in the audit "
+                    "row). E.g. 'after FY22 receivables override', 'sponsor "
+                    "supplied revised FY24 SoFP'."
+                ),
+            },
+        },
+    },
+}
+
+
+def rerun_analysis(case_id: str, reason: Optional[str] = None) -> Dict[str, Any]:
+    reason = (reason or "").strip() or None
+    description = "Re-run the full analysis pipeline"
+    if reason:
+        description += f" — reason: \"{reason[:80]}{'…' if len(reason) > 80 else ''}\""
+    description += " (~30-60s, runs in the background)"
+    return _preview(case_id, "rerun_analysis", {"reason": reason}, description)
