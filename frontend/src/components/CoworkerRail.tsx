@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { VegaEmbed } from 'react-vega'
+import type { VisualizationSpec } from 'vega-embed'
 import {
   CoworkerCitation, CoworkerEvent, CoworkerSuggestion,
   cancelPendingAction, confirmPendingAction,
@@ -17,6 +19,15 @@ type PendingAction = {
   status: 'pending' | 'approving' | 'approved' | 'cancelling' | 'cancelled' | 'failed'
   resultSummary?: string
   error?: string
+}
+
+type ChartArtifact = {
+  id: string             // tool_use id
+  title: string
+  chartType: string      // "line" | "bar" | "ratio_vs_policy" | "comparison"
+  metric?: string
+  summary?: string
+  spec: VisualizationSpec
 }
 
 const MD_PLUGINS = [remarkGfm]
@@ -109,7 +120,7 @@ type ToolCall = {
 
 type Turn =
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string; toolCalls: ToolCall[]; citations: CoworkerCitation[]; pendingActions: PendingAction[]; streaming?: boolean }
+  | { role: 'assistant'; content: string; toolCalls: ToolCall[]; citations: CoworkerCitation[]; pendingActions: PendingAction[]; charts: ChartArtifact[]; streaming?: boolean }
 
 export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRailProps) {
   const navigate = useNavigate()
@@ -163,7 +174,7 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
         const hydrated: Turn[] = (h.history || []).map((m: { role: string; content: string }) =>
           m.role === 'user'
             ? { role: 'user', content: m.content }
-            : { role: 'assistant', content: m.content, toolCalls: [], citations: [], pendingActions: [] },
+            : { role: 'assistant', content: m.content, toolCalls: [], citations: [], pendingActions: [], charts: [] },
         )
         setTurns(hydrated)
       })
@@ -253,7 +264,7 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
     setTurns((prev) => [
       ...prev,
       { role: 'user', content: text },
-      { role: 'assistant', content: '', toolCalls: [], citations: [], pendingActions: [], streaming: true },
+      { role: 'assistant', content: '', toolCalls: [], citations: [], pendingActions: [], charts: [], streaming: true },
     ])
 
     const controller = new AbortController()
@@ -283,6 +294,10 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
             // Detect preview tool results — these are write-side tools that
             // staged a pending action. Surface as a confirmation card.
             const preview = !event.is_error ? extractPreview(event.output?.result) : null
+            // Detect chart tool results — render the Vega-Lite spec inline.
+            const chart = !event.is_error
+              ? extractChart(event.id, event.output?.result)
+              : null
             mutateLastAssistant((t) => ({
               ...t,
               toolCalls: t.toolCalls.map((tc) =>
@@ -298,6 +313,7 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
               pendingActions: preview
                 ? [...t.pendingActions, { ...preview, status: 'pending' as const }]
                 : t.pendingActions,
+              charts: chart ? [...t.charts, chart] : t.charts,
             }))
           } else if (event.type === 'done') {
             mutateLastAssistant((t) => ({
@@ -421,6 +437,13 @@ export default function CoworkerRail({ caseId, open, onOpenChange }: CoworkerRai
                   </span>
                 ) : null}
               </div>
+              {!m.streaming && m.charts.length > 0 && (
+                <div className="coworker-charts-stack">
+                  {m.charts.map((c) => (
+                    <ChartArtifactView key={c.id} chart={c} />
+                  ))}
+                </div>
+              )}
               {!m.streaming && m.pendingActions.length > 0 && (
                 <div className="coworker-actions-stack">
                   {m.pendingActions.map((pa) => (
@@ -504,6 +527,40 @@ function assistantStatusText(turn: Extract<Turn, { role: 'assistant' }>): string
   if (inFlight > 0) return 'Looking up case data…'
   if (turn.toolCalls.length > 0) return 'Drafting answer…'
   return 'Thinking…'
+}
+
+// ---- Chart artifacts (Vega-Lite) -----------------------------------------
+
+function extractChart(toolUseId: string, result: unknown): ChartArtifact | null {
+  if (!result || typeof result !== 'object') return null
+  const r = result as Record<string, unknown>
+  const spec = r.vega_spec
+  if (!spec || typeof spec !== 'object') return null
+  return {
+    id: toolUseId,
+    title: typeof r.title === 'string' ? r.title : 'Chart',
+    chartType: typeof r.chart_type === 'string' ? r.chart_type : 'chart',
+    metric: typeof r.metric === 'string' ? r.metric : undefined,
+    summary: typeof r.summary === 'string' ? r.summary : undefined,
+    spec: spec as VisualizationSpec,
+  }
+}
+
+function ChartArtifactView({ chart }: { chart: ChartArtifact }) {
+  return (
+    <div className="coworker-chart-card">
+      <div className="coworker-chart-vega">
+        <VegaEmbed
+          spec={chart.spec}
+          options={{ actions: false, renderer: 'svg' }}
+          className="coworker-chart-vega-inner"
+        />
+      </div>
+      {chart.summary && (
+        <div className="coworker-chart-summary">{chart.summary}</div>
+      )}
+    </div>
+  )
 }
 
 // ---- Pending actions (preview-then-confirm) ------------------------------

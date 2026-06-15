@@ -16,7 +16,7 @@ from __future__ import annotations
 import traceback
 from typing import Any, Callable, Dict, List
 
-from . import actions, findings, fs, knowledge, report
+from . import actions, charts, findings, fs, knowledge, report
 
 
 # Order here is the order the model sees the tools in the prompt.
@@ -35,6 +35,10 @@ _TOOLS: List[Dict[str, Any]] = [
     {"spec": report.GET_REPORT_SECTION_SPEC,   "call": report.get_report_section},
     {"spec": findings.LIST_RED_FLAGS_SPEC,        "call": findings.list_red_flags},
     {"spec": findings.DRAFT_PROBE_QUESTIONS_SPEC, "call": findings.draft_probe_questions},
+    # Visual tools — return Vega-Lite specs rendered inline in the rail.
+    {"spec": charts.PLOT_METRIC_SPEC,             "call": charts.plot_metric},
+    {"spec": charts.PLOT_RATIO_VS_POLICY_SPEC,    "call": charts.plot_ratio_vs_policy},
+    {"spec": charts.COMPARE_METRICS_SPEC,         "call": charts.compare_metrics},
     # Write-side tools — all create pending actions, never mutate inline.
     {"spec": actions.FLAG_FOR_COMMITTEE_SPEC,          "call": actions.flag_for_committee},
     {"spec": actions.ANNOTATE_FINDING_SPEC,            "call": actions.annotate_finding},
