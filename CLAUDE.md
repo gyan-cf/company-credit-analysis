@@ -2,13 +2,41 @@
 
 Project brief for Claude — **read this before any non-trivial change.**
 
+## Repo split — what lives where
+
+The CrediSage codebase is split across two repos by target market. Both
+share the same architecture (FastAPI + React + file-backed cases + tool-
+using co-worker) and were forked from the same commit on 2026-06-15.
+
+| Repo                                                | Market           | Folder on disk                                                |
+| --------------------------------------------------- | ---------------- | ------------------------------------------------------------- |
+| **`gyan-cf/company-credit-analysis`** (this repo)   | **India + ME**   | `C:\Users\Gyan\Documents\Dobin\Data Science\comany-credit-analysis\`     |
+| `gyan-cf/financial-statement-analysis` (sister)     | SEA (SG, MY, ID) | `C:\Users\Gyan\Documents\Dobin\Data Science\financial-statement-analysis\` |
+
+> **Heads-up for any non-trivial change in this repo:** Singapore-specific
+> work (ACRA / SFRS / SSIC / SGD-defaulted config) belongs in the **SEA**
+> fork. India / ME work belongs here. The two repos diverge over time; do
+> not back-port SG-only paths into this codebase, and do not push India /
+> ME-only paths into the SEA fork. If a change is genuinely market-
+> agnostic (co-worker, agent_loop, case_store, report generator, Excel
+> export, etc.), it can land in both — make the change here first, then
+> cherry-pick into the SEA fork.
+
 ## What this is
 
-**CrediSage** — corporate credit analysis platform for Singapore SMEs and large
-corporates. Current stage: **financial statements only.** Bank statement
-analysis is queued for the next stage. GST and bureau ingestion are retired
-from the live `/analyze` path; their old India-flavored implementations live
-under `legacy/` for reference.
+**CrediSage (India + ME)** — corporate credit analysis platform targeting
+the Indian and Middle-Eastern SME and large-corporate market. Current
+stage: **financial statements only.** Bank-statement analysis and GST /
+bureau ingestion are pending re-introduction (the legacy India FS / bank /
+GST / CIR implementation lives under `legacy/` as a starting point for
+the port — see [India/ME transition](#indiame-transition) below).
+
+> **Current code state warning:** the live `/analyze` path on disk is the
+> Singapore-flavoured implementation inherited from the fork point —
+> `core/ingestion/` is SG-aware (SFRS canonical map, ACRA C223 / BM42A
+> extractors, z124 / UFS PDF flavours). The India/ME ingestion stack has
+> not landed yet. Treat any SG-specific module name as "to be replaced or
+> generalised" rather than as the long-term shape.
 
 Long-form design lives at [`docs/PLATFORM_BLUEPRINT.md`](docs/PLATFORM_BLUEPRINT.md).
 
@@ -179,6 +207,37 @@ them, every z124 XBRL render and Excel template still ingests fine.
   block. The per-source block view is for drill-down; the merged block is
   the default Probe42-style spread.
 
+## India/ME transition
+
+The repo split (2026-06-15) left this codebase carrying the SG
+implementation as its starting point. The work to actually serve India +
+ME runs roughly in this order:
+
+1. **Ingestion adapters.** `core/ingestion/` is SG-aware end-to-end. We
+   need an India-flavoured sibling pipeline:
+   - File classifier that recognises Indian audited FS PDFs (Schedule III
+     formats), CIN-fronted cover pages, board-report formats.
+   - Canonical map extended for Indian GAAP / Ind AS line-item synonyms
+     (some overlap with `legacy/features_pkg/fs_*.py` — reuse the
+     synonym lists there as the seed).
+   - ME variants (typically IFRS-aligned) often render cleanly with the
+     existing SFRS(I) map; verify and only branch where actually needed.
+2. **Profile extraction.** `acra_profile_extract.py` only knows about
+   ACRA forms. Equivalents for the MCA21 (India) and DED / DSO (UAE)
+   corporate registries are needed. Legacy India work was bureau-
+   centric; port the CIR profile bits as the entry point.
+3. **Config + policy.** `config/config.yaml` currency defaults to SGD;
+   `portfolio_norms` thresholds came from MAS-aligned committee policy.
+   India + ME both need their own threshold sheets — keep `portfolio_norms`
+   nested per market or default by manifest `jurisdiction`.
+4. **GST / bureau ingestion.** Legacy India GST and bureau pipelines sit
+   under `legacy/features_pkg/`. Port cleanly into the new structure
+   (don't import from legacy at runtime — per the Don'ts below).
+5. **Bank-statement ingestion.** Indian banks publish CSV / PDF
+   statements with conventions (NEFT / RTGS markers, GST IDs, reverse-
+   chronological) different from the SG flow. Legacy
+   `legacy/features_pkg/bank_*.py` is the reference port target.
+
 ## Known issues / pending work
 
 1. **Cross-source merge frontend rendering.** The merged blocks now exist on
@@ -187,19 +246,25 @@ them, every z124 XBRL render and Excel template still ingests fine.
 2. **Notes / narrative sections only appear for OCR'd UFS PDFs.** z124 XBRL
    renders are tables-only; no audit prose. Once OCR is installed, the
    `notes/` and `narrative/` blocks light up.
-3. **Bank statement ingestion.** Queued for next stage; legacy implementation
-   sits under `legacy/features_pkg/bank_*.py` for reference.
+3. **Bank statement ingestion.** Queued; legacy implementation sits under
+   `legacy/features_pkg/bank_*.py` for reference (see transition step 5).
 4. **Merge cell-conflict policy** is a heuristic (prefer source whose own
    most-recent FY equals the column FY, tiebreak by confidence). Watch for
    cases where it picks the wrong source and add explicit overrides if so.
 
 ## Don'ts
 
+- **Don't push SG-only features here.** Singapore-specific ingestion (new
+  ACRA form types, additional SFRS taxonomy, SG-only policy thresholds)
+  belongs in the SEA fork. If a change is market-agnostic (co-worker,
+  agents, report, charts) it can land in both — make it here first and
+  cherry-pick over.
 - **Don't add new `prompts/<dimension>_analysis_prompt.py`** without wiring
   it into `core/agents/fs_analysis.py` (or a sibling file) and the pipeline.
   Loose prompt files rot.
 - **Don't import from `legacy/`** in any live module. If you need legacy
-  functionality, port it cleanly into the new structure first.
+  functionality (very likely while porting the India/ME stack), port it
+  cleanly into the new structure first.
 - **Don't create files outside the case directory at runtime.** Tests can
   use `tempfile.TemporaryDirectory()`; the API must write only under
   `cases/<case_id>/`.
