@@ -5,8 +5,10 @@ Anthropic Claude API client wrapper.
 import json
 import os
 import time
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Iterator, List, Optional
+
 from anthropic import Anthropic
+
 from config.config import get_config
 
 
@@ -113,6 +115,92 @@ class ClaudeClient:
             'error': 'Max retries exceeded'
         }
     
+    def stream_message(
+        self,
+        *,
+        system: str,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        model: Optional[str] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """
+        One streamed round-trip with optional tool-use.
+
+        Yields events:
+            {"type": "text_delta", "text": str}
+            {"type": "message_complete",
+             "stop_reason": str,
+             "content": list,         # raw content blocks as dicts
+             "tool_uses": list,       # convenience: [{id, name, input}]
+             "text": str,             # concatenated assistant text
+             "usage": {input_tokens, output_tokens}}
+            {"type": "error", "error": str}
+
+        This method does NOT loop on tool_use — the caller (agent loop)
+        decides whether to dispatch tools and continue with a follow-up call.
+        """
+        kwargs: Dict[str, Any] = {
+            "model": model or self.model,
+            "max_tokens": max_tokens or self.max_tokens,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "system": system,
+            "messages": messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        try:
+            with self.client.messages.stream(**kwargs) as stream:
+                for text_chunk in stream.text_stream:
+                    if text_chunk:
+                        yield {"type": "text_delta", "text": text_chunk}
+                final = stream.get_final_message()
+        except Exception as e:  # noqa: BLE001
+            yield {"type": "error", "error": f"{type(e).__name__}: {e}"}
+            return
+
+        content_blocks: List[Dict[str, Any]] = []
+        tool_uses: List[Dict[str, Any]] = []
+        text_parts: List[str] = []
+        for block in (final.content or []):
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                text = getattr(block, "text", "") or ""
+                text_parts.append(text)
+                content_blocks.append({"type": "text", "text": text})
+            elif block_type == "tool_use":
+                tu = {
+                    "id": getattr(block, "id", ""),
+                    "name": getattr(block, "name", ""),
+                    "input": getattr(block, "input", {}) or {},
+                }
+                tool_uses.append(tu)
+                content_blocks.append({"type": "tool_use", **tu})
+            else:
+                # Forward unknown blocks verbatim where possible.
+                try:
+                    content_blocks.append(block.model_dump())
+                except Exception:
+                    content_blocks.append({"type": block_type or "unknown"})
+
+        usage = {}
+        if getattr(final, "usage", None):
+            usage = {
+                "input_tokens": getattr(final.usage, "input_tokens", 0),
+                "output_tokens": getattr(final.usage, "output_tokens", 0),
+            }
+
+        yield {
+            "type": "message_complete",
+            "stop_reason": getattr(final, "stop_reason", None),
+            "content": content_blocks,
+            "tool_uses": tool_uses,
+            "text": "".join(text_parts),
+            "usage": usage,
+        }
+
     def parse_json_response(self, response_content: str) -> Dict[str, Any]:
         """
         Parse JSON from Claude response content.

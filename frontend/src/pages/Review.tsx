@@ -9,6 +9,7 @@ import {
   approveSource,
   rejectSource,
   resetSourceStatus,
+  triggerSourceExtraction,
   runAnalysis,
   pdfUrl,
   type SgFsDocument,
@@ -56,8 +57,18 @@ export default function Review() {
   const [busy, setBusy] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeError, setAnalyzeError] = useState('')
+  const [extractNotice, setExtractNotice] = useState('')
   const [tab, setTab] = useState<Tab>('sofp')
   const [pdfPage, setPdfPage] = useState<number | undefined>(undefined)
+  const [pdfCollapsed, setPdfCollapsed] = useState(false)
+
+  // Row clicks / note clicks jump the PDF to a page. If the analyst hid the
+  // PDF panel, we re-open it for the jump — otherwise the click silently
+  // fires into an invisible iframe.
+  const jumpToPage = useCallback((page: number | undefined) => {
+    setPdfPage(page)
+    if (page !== undefined) setPdfCollapsed(false)
+  }, [])
 
   const refreshSummary = useCallback(async () => {
     if (!caseId) return
@@ -105,6 +116,7 @@ export default function Review() {
   useEffect(() => {
     setTab('sofp')
     setPdfPage(undefined)
+    setExtractNotice('')
   }, [sourceId])
 
   const handleSwitchSource = (sid: string) => {
@@ -164,6 +176,20 @@ export default function Review() {
     setBusy(true); setErr('')
     try {
       await resetSourceStatus(caseId, sourceId)
+      await refreshSummary()
+    } catch (e) { setErr(String(e)) } finally { setBusy(false) }
+  }
+
+  const handleRestartExtraction = async () => {
+    if (!caseId || !sourceId) return
+    const label = currentSource?.original_filename || sourceId
+    if (!confirm(`Re-extract ${label}? This resets this source to pending and leaves the other FY statements in place.`)) return
+    setBusy(true); setErr(''); setExtractNotice('')
+    try {
+      const res = await triggerSourceExtraction(caseId, sourceId)
+      setExtractNotice(
+        `${res.filename} queued for selected re-extraction. Refresh this review after the upload status returns to ready.`,
+      )
       await refreshSummary()
     } catch (e) { setErr(String(e)) } finally { setBusy(false) }
   }
@@ -244,6 +270,10 @@ export default function Review() {
         />
       )}
 
+      {extractNotice && (
+        <div className="review-reextract-notice">{extractNotice}</div>
+      )}
+
       {/* Source switcher */}
       {index.sources.length > 1 && (
         <div className="review-source-bar">
@@ -268,19 +298,43 @@ export default function Review() {
         </div>
       )}
 
-      <div className="review-body">
-        {/* LEFT — PDF viewer */}
-        <div className="review-left">
-          <iframe
-            key={`${sourceId}-${pdfPage || 'all'}`}
-            title="Source PDF"
-            src={pdfUrl(caseId, sourceId, pdfPage)}
-            className="review-pdf"
-          />
-          {pdfPage && (
-            <div className="review-pdf-meta">Jumped to p.{pdfPage}</div>
-          )}
-        </div>
+      <div className={`review-body ${pdfCollapsed ? 'pdf-collapsed' : ''}`}>
+        {/* LEFT — PDF viewer (collapsible) */}
+        {pdfCollapsed ? (
+          <button
+            type="button"
+            className="review-pdf-restore"
+            title="Show source PDF"
+            aria-label="Show source PDF"
+            onClick={() => setPdfCollapsed(false)}
+          >
+            <span>PDF</span>
+            <span className="review-pdf-restore-arrow">›</span>
+          </button>
+        ) : (
+          <div className="review-left">
+            <div className="review-pdf-toolbar">
+              {pdfPage ? (
+                <span className="review-pdf-meta">Jumped to p.{pdfPage}</span>
+              ) : (
+                <span className="review-pdf-meta muted">Source PDF</span>
+              )}
+              <button
+                type="button"
+                className="review-pdf-collapse"
+                title="Hide PDF panel"
+                aria-label="Hide PDF panel"
+                onClick={() => setPdfCollapsed(true)}
+              >‹</button>
+            </div>
+            <iframe
+              key={`${sourceId}-${pdfPage || 'all'}`}
+              title="Source PDF"
+              src={pdfUrl(caseId, sourceId, pdfPage)}
+              className="review-pdf"
+            />
+          </div>
+        )}
 
         {/* RIGHT — extracted content + tabs */}
         <div className="review-right">
@@ -312,7 +366,7 @@ export default function Review() {
                 <StatementTable
                   block={statementBlock}
                   blockIdx={statementBlockIdx}
-                  onRowClick={(row) => { if (row.page) setPdfPage(row.page) }}
+                  onRowClick={(row) => { if (row.page) jumpToPage(row.page) }}
                   onCellEdit={handleCellEdit}
                   approved={reviewStatus === 'approved'}
                 />
@@ -322,15 +376,18 @@ export default function Review() {
             )}
 
             {tab === 'notes' && notesBlock && (
-              <NotesView block={notesBlock} onPageClick={setPdfPage} />
+              <NotesView block={notesBlock} onPageClick={jumpToPage} />
             )}
 
             {tab === 'narrative' && (
-              <NarrativeView blocks={narrativeBlocks} onPageClick={setPdfPage} />
+              <NarrativeView blocks={narrativeBlocks} onPageClick={jumpToPage} />
             )}
           </div>
 
           <div className="review-footer">
+            <button className="review-reextract" onClick={handleRestartExtraction} disabled={busy}>
+              Re-extract source
+            </button>
             {reviewStatus === 'approved' || reviewStatus === 'rejected' ? (
               <>
                 <button onClick={handleReset} disabled={busy}>Reset to pending</button>
@@ -374,11 +431,11 @@ function AnalysisGateBanner({
             ✓ {summary.approved} of {summary.total} source{summary.total === 1 ? '' : 's'} approved — ready for analysis
           </div>
           <button
-            className="primary gate-banner-cta"
+            className="primary gate-banner-cta workflow-next-action"
             disabled={analyzing}
             onClick={onRunAnalysis}
           >
-            {analyzing ? 'Analysing…' : 'Run analysis →'}
+            {analyzing ? 'Analysing…' : 'Run Analysis'}
           </button>
         </div>
         {analyzing && (
@@ -401,8 +458,8 @@ function AnalysisGateBanner({
           Approval gate — {summary.approved} of {summary.total} approved
           {summary.rejected > 0 && <span style={{ color: '#991b1b' }}> · {summary.rejected} rejected</span>}
         </div>
-        <button className="primary gate-banner-cta" disabled>
-          Run analysis →
+        <button className="primary gate-banner-cta workflow-next-action" disabled>
+          Run Analysis
         </button>
       </div>
       <div className="gate-banner-help">

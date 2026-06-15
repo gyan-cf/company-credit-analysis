@@ -2,9 +2,10 @@
 Section template for the Credit Analysis Report (FS-only Phase 1).
 
 Sections that need commercial / web-research input we cannot satisfy on FS data
-alone are skipped for now (3 Facility Context, 13 Management & Governance,
-18 Conditions Precedent, 19 Covenants & Monitoring). The numbering matches
-docs/Credit Analysis Report.docx so the printed report is comparable.
+alone are skipped for now (Facility Context, Management & Governance,
+Conditions Precedent, Covenants & Monitoring). Active FS-only sections are
+numbered contiguously so the workspace and exported report do not look as if
+sections failed to generate.
 """
 
 from __future__ import annotations
@@ -39,16 +40,16 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
             "the data doesn't reveal."
         ),
     },
-    # 3. Facility Context — SKIPPED for FS-only scope
+    # Facility Context — skipped for FS-only scope
     {
         "code": "financial_snapshot",
-        "number": 4,
+        "number": 3,
         "title": "Financial Snapshot",
         "type": "deterministic_table",
     },
     {
         "code": "revenue_momentum",
-        "number": 5,
+        "number": 4,
         "title": "Revenue and Business Momentum",
         "type": "llm",
         "guidance": (
@@ -60,7 +61,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "profitability",
-        "number": 6,
+        "number": 5,
         "title": "Profitability Analysis",
         "type": "llm",
         "guidance": (
@@ -76,7 +77,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "liquidity_wc",
-        "number": 7,
+        "number": 6,
         "title": "Liquidity and Working Capital",
         "type": "llm",
         "guidance": (
@@ -92,7 +93,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "cash_flow",
-        "number": 8,
+        "number": 7,
         "title": "Cash Flow Analysis",
         "type": "llm",
         "guidance": (
@@ -107,7 +108,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "bs_capital",
-        "number": 9,
+        "number": 8,
         "title": "Balance Sheet and Capital Structure",
         "type": "llm",
         "guidance": (
@@ -122,7 +123,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "receivables_rpt",
-        "number": 10,
+        "number": 9,
         "title": "Receivables and Related-Party Risk",
         "type": "llm",
         "guidance": (
@@ -133,7 +134,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "payables",
-        "number": 11,
+        "number": 10,
         "title": "Payables and Accrued Liabilities",
         "type": "llm",
         "guidance": (
@@ -144,7 +145,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "fx_geo",
-        "number": 12,
+        "number": 11,
         "title": "Foreign Currency and Geographic Exposure",
         "type": "llm",
         "guidance": (
@@ -154,10 +155,10 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
             "specific FX disclosures."
         ),
     },
-    # 13. Management & Governance — SKIPPED for FS-only scope
+    # Management & Governance — skipped for FS-only scope
     {
         "code": "strengths",
-        "number": 14,
+        "number": 12,
         "title": "Key Credit Strengths",
         "type": "llm",
         "guidance": (
@@ -168,7 +169,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "weaknesses",
-        "number": 15,
+        "number": 13,
         "title": "Key Credit Weaknesses",
         "type": "llm",
         "guidance": (
@@ -178,7 +179,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "preliminary_rating",
-        "number": 16,
+        "number": 14,
         "title": "Preliminary Risk Rating",
         "type": "llm",
         "guidance": (
@@ -191,7 +192,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "recommendation",
-        "number": 17,
+        "number": 15,
         "title": "Credit Decision Recommendation",
         "type": "llm",
         "guidance": (
@@ -201,10 +202,10 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
             "management review are still pending."
         ),
     },
-    # 18, 19. CPs / Covenants — SKIPPED for FS-only scope
+    # CPs / Covenants — skipped for FS-only scope
     {
         "code": "questions_management",
-        "number": 20,
+        "number": 16,
         "title": "Questions for Management",
         "type": "llm",
         "guidance": (
@@ -215,7 +216,7 @@ SECTIONS_FS_ONLY: List[Dict[str, Any]] = [
     },
     {
         "code": "final_opinion",
-        "number": 21,
+        "number": 17,
         "title": "Final Credit Opinion",
         "type": "llm",
         "guidance": (
@@ -237,6 +238,13 @@ def _kv_lines(d: Dict[str, Any], keys: List[str]) -> List[str]:
     return out
 
 
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def _fy_block(by_fy: Dict[str, Any], fy: str, fields: List[str], source: str = "raw") -> List[str]:
     lines = [f"### {fy}"]
     data = (by_fy.get(fy) or {}).get(source) or {}
@@ -250,7 +258,38 @@ def _fy_block(by_fy: Dict[str, Any], fy: str, fields: List[str], source: str = "
 def _entity_basics(context: Dict[str, Any]) -> List[str]:
     analytics = context.get("analytics", {}) or {}
     acra = context.get("acra_profile", {}) or {}
+    case_profile = context.get("case", {}) or {}
     ent = analytics.get("entity") or {}
+    name = _first_non_empty(
+        acra.get("entity_name"),
+        ent.get("name"),
+        case_profile.get("company_name"),
+        "the Borrower",
+    )
+    ssic_code = _first_non_empty(
+        acra.get("primary_ssic_code"),
+        ent.get("ssic_code"),
+        ent.get("ssic"),
+        case_profile.get("primary_ssic_code"),
+        "n/a",
+    )
+    ssic_desc = _first_non_empty(
+        acra.get("primary_ssic_desc"),
+        ent.get("ssic_description"),
+        case_profile.get("primary_ssic_desc"),
+        case_profile.get("industry_hint"),
+        "n/a",
+    )
+    return [
+        "## Entity basics",
+        f"- Name: {name}",
+        f"- UEN: {_first_non_empty(acra.get('uen'), ent.get('uen'), case_profile.get('uen'), case_profile.get('cin'), 'n/a')}",
+        f"- Primary SSIC: {ssic_code} - {ssic_desc}",
+        f"- Framework: {ent.get('framework') or acra.get('accounting_standards') or 'SFRS'}",
+        f"- Audited: {ent.get('audited') or acra.get('audited')}",
+        f"- Consolidated: {ent.get('consolidated', False)}",
+        f"- FYs reviewed: {', '.join(analytics.get('fys', []))}",
+    ]
     name = (
         acra.get("entity_name") or ent.get("name") or "the Borrower"
     )
@@ -459,6 +498,7 @@ def build_section_context(section_def: Dict[str, Any], context: Dict[str, Any]) 
 
     elif code == "borrower_profile":
         ap = context.get("acra_profile", {}) or {}
+        case_profile = context.get("case", {}) or {}
         blob.append("## ACRA profile fields")
         for k in (
             "entity_type", "entity_status", "incorporation_date",
@@ -469,6 +509,21 @@ def build_section_context(section_def: Dict[str, Any], context: Dict[str, Any]) 
             v = ap.get(k)
             if v is not None:
                 blob.append(f"- {k}: {v}")
+        if case_profile:
+            blob.append("")
+            blob.append("## Onboarding case profile fields")
+            for k in (
+                "company_name", "uen", "entity_type", "company_status",
+                "incorporation_date", "fiscal_year_end",
+                "primary_ssic_code", "primary_ssic_desc",
+                "industry_hint", "registered_address",
+                "country", "jurisdiction",
+            ):
+                v = case_profile.get(k)
+                if v not in (None, ""):
+                    blob.append(f"- {k}: {v}")
+            blob.append("")
+            blob.append("Use onboarding case profile fields when ACRA profile fields are blank.")
 
     # Append the section-specific guidance
     blob.append("")

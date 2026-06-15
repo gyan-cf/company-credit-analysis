@@ -22,6 +22,8 @@ agent reads directly. Replaces the legacy `features/fs_ratios.compute_fs_ratios`
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -206,6 +208,8 @@ def compute_ratios(raw: Dict[str, Optional[float]]) -> Dict[str, Optional[float]
         "ebitda_margin":     _safe_div(ebitda, revenue),
         "ebit_margin":       _safe_div(ebit, revenue),
         "pat_margin":        _safe_div(pat, revenue),
+        "return_on_assets":   _safe_div(pat, total_assets),
+        "return_on_equity":   _safe_div(pat, total_equity),
         # Liquidity
         "current_ratio":     _safe_div(current_assets, current_liab),
         "quick_ratio":       _safe_div(quick_assets, current_liab),
@@ -304,3 +308,112 @@ def build_fs_agent_data(
         "trends": trends,
         "review_flags": review_flags or [],
     }
+
+
+def periods_from_merged_statements(
+    financials_dir: Path,
+    *,
+    perimeter: str = "company",
+    fallback_periods: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Build canonical period objects from parsed/financials/merged/*.json.
+
+    The report and UI-reviewed financials operate on the merged statement
+    sidecars. These can be more complete than the initial ingestion periods,
+    especially when one FY comes from OCR/agentic extraction. Reconstructing
+    periods from merged sidecars keeps downstream analytics aligned with the
+    reviewed statement view.
+    """
+    merged_dir = Path(financials_dir) / "merged"
+    if not merged_dir.exists():
+        return []
+
+    fallback_by_key = {
+        (p.get("perimeter"), p.get("fy")): p
+        for p in (fallback_periods or [])
+        if p.get("perimeter") and p.get("fy")
+    }
+    periods: Dict[str, Dict[str, Any]] = {}
+
+    for statement in ("soci", "sofp", "socf"):
+        path = merged_dir / f"{statement}__{perimeter}.json"
+        if not path.exists():
+            continue
+        try:
+            block = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+
+        fys = block.get("fys") or []
+        if not fys:
+            keys = set()
+            for row in block.get("rows", []) or []:
+                keys.update((row.get("values") or {}).keys())
+            fys = sorted(keys)
+
+        for fy in fys:
+            fallback = fallback_by_key.get((perimeter, fy), {})
+            period = periods.setdefault(
+                fy,
+                {
+                    "perimeter": perimeter,
+                    "fy": fy,
+                    "period_end": fallback.get("period_end"),
+                    "currency": fallback.get("currency") or block.get("currency") or "SGD",
+                    "statements": {"soci": [], "sofp": [], "socf": []},
+                },
+            )
+            if not period.get("period_end") and fallback.get("period_end"):
+                period["period_end"] = fallback.get("period_end")
+            if not period.get("currency") and fallback.get("currency"):
+                period["currency"] = fallback.get("currency")
+
+        for row in block.get("rows", []) or []:
+            code = row.get("canonical_code")
+            if not code:
+                continue
+            values = row.get("values") or {}
+            provenance = row.get("provenance") or {}
+            for fy in fys:
+                amount = values.get(fy)
+                if amount is None:
+                    continue
+                period = periods.get(fy)
+                if not period:
+                    continue
+                prov = provenance.get(fy) or {}
+                period["statements"][statement].append({
+                    "canonical_code": code,
+                    "amount": amount,
+                    "label": row.get("label") or row.get("raw_label"),
+                    "source_id": prov.get("source_id"),
+                    "page": prov.get("page"),
+                    "confidence": prov.get("confidence"),
+                })
+
+    return sorted(periods.values(), key=lambda p: _fy_year(p.get("fy", "")), reverse=True)
+
+
+def build_fs_agent_data_from_merged(
+    financials_dir: Path,
+    *,
+    perimeter: str = "company",
+    entity: Optional[Dict[str, Any]] = None,
+    review_flags: Optional[List[Dict[str, Any]]] = None,
+    fallback_periods: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Build analytics directly from merged statement sidecars when available."""
+    periods = periods_from_merged_statements(
+        financials_dir,
+        perimeter=perimeter,
+        fallback_periods=fallback_periods,
+    )
+    if not periods:
+        return {}
+    return build_fs_agent_data(
+        periods,
+        perimeter=perimeter,
+        entity=entity,
+        review_flags=review_flags,
+    )

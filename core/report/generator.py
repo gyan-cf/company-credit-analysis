@@ -22,13 +22,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .docx_writer import write_report_docx
-from .html_renderer import markdown_to_html
 from .llm_caller import call_section_llm
 from .template import SECTIONS_FS_ONLY, build_section_context
+from core.features.fs_analytics import build_fs_agent_data_from_merged
 
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_section_numbers(sections: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], bool]:
+    """Return sections with contiguous display numbers in their current order."""
+    normalized: List[Dict[str, Any]] = []
+    changed = False
+    for idx, section in enumerate(sections or [], start=1):
+        item = dict(section)
+        if item.get("number") != idx:
+            item["number"] = idx
+            changed = True
+        normalized.append(item)
+    return normalized, changed
 
 
 # ---- Context loader -----------------------------------------------------------
@@ -36,6 +48,7 @@ logger = logging.getLogger(__name__)
 def load_case_context(case_root: Path) -> Dict[str, Any]:
     """
     Aggregate everything the section prompts might want into one dict:
+        - case:             cases/<id>/manifest.json
         - analytics:        cases/<id>/features/fs_analytics.json
         - acra_profile:     cases/<id>/parsed/acra_profile.json
         - ingestion:        cases/<id>/parsed/sg_ingestion.json
@@ -55,12 +68,17 @@ def load_case_context(case_root: Path) -> Dict[str, Any]:
             logger.warning("invalid JSON at %s", p)
             return None
 
-    if (data := _read_json(case_root / "features" / "fs_analytics.json")):
-        ctx["analytics"] = data
+    analytics = _read_json(case_root / "features" / "fs_analytics.json") or {}
+    case_manifest = _read_json(case_root / "manifest.json") or {}
+    if case_manifest:
+        ctx["case"] = case_manifest
+    if analytics:
+        ctx["analytics"] = analytics
     if (data := _read_json(case_root / "parsed" / "acra_profile.json")):
         ctx["acra_profile"] = data
-    if (data := _read_json(case_root / "parsed" / "sg_ingestion.json")):
-        ctx["ingestion"] = data
+    ingestion = _read_json(case_root / "parsed" / "sg_ingestion.json") or {}
+    if ingestion:
+        ctx["ingestion"] = ingestion
 
     fin_dir = case_root / "parsed" / "financials"
     docs: List[Dict[str, Any]] = []
@@ -73,6 +91,32 @@ def load_case_context(case_root: Path) -> Dict[str, Any]:
                 docs.append(d)
     ctx["documents"] = docs
 
+    acra_profile = ctx.get("acra_profile", {}) or {}
+    entity = _enrich_entity_context(
+        analytics.get("entity") or {},
+        case_manifest=case_manifest,
+        acra_profile=acra_profile,
+    )
+    if analytics:
+        analytics = dict(analytics)
+        analytics["entity"] = entity
+        ctx["analytics"] = analytics
+
+    merged_analytics = build_fs_agent_data_from_merged(
+        fin_dir,
+        perimeter=(analytics.get("perimeter") or "company"),
+        entity=entity,
+        review_flags=(ingestion.get("review_flags") or analytics.get("review_flags") or []),
+        fallback_periods=(ingestion.get("periods") or []),
+    )
+    if merged_analytics:
+        merged_analytics["entity"] = _enrich_entity_context(
+            merged_analytics.get("entity") or {},
+            case_manifest=case_manifest,
+            acra_profile=acra_profile,
+        )
+        ctx["analytics"] = merged_analytics
+
     merged: Dict[str, Any] = {}
     merged_dir = fin_dir / "merged"
     if merged_dir.exists():
@@ -83,6 +127,65 @@ def load_case_context(case_root: Path) -> Dict[str, Any]:
     ctx["merged"] = merged
 
     return ctx
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _enrich_entity_context(
+    entity: Dict[str, Any],
+    *,
+    case_manifest: Dict[str, Any],
+    acra_profile: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Add onboarding/ACRA identity fields to the report entity context."""
+    out = dict(entity or {})
+    out["name"] = _first_non_empty(
+        acra_profile.get("entity_name"),
+        out.get("name"),
+        case_manifest.get("company_name"),
+    )
+    out["uen"] = _first_non_empty(
+        acra_profile.get("uen"),
+        out.get("uen"),
+        case_manifest.get("uen"),
+        case_manifest.get("cin"),
+    )
+    out["ssic_code"] = _first_non_empty(
+        acra_profile.get("primary_ssic_code"),
+        out.get("ssic_code"),
+        out.get("ssic"),
+        case_manifest.get("primary_ssic_code"),
+    )
+    out["ssic_description"] = _first_non_empty(
+        acra_profile.get("primary_ssic_desc"),
+        out.get("ssic_description"),
+        case_manifest.get("primary_ssic_desc"),
+        case_manifest.get("industry_hint"),
+    )
+    for key in (
+        "country",
+        "jurisdiction",
+        "entity_type",
+        "company_status",
+        "incorporation_date",
+        "fiscal_year_end",
+        "registered_address",
+        "currency",
+        "facility_type",
+        "requested_limit",
+        "relationship_manager",
+        "priority",
+        "industry_hint",
+    ):
+        value = _first_non_empty(out.get(key), case_manifest.get(key))
+        if value is not None:
+            out[key] = value
+    return out
 
 
 # ---- Deterministic section: Financial Snapshot -------------------------------
@@ -152,6 +255,8 @@ def render_financial_snapshot(context: Dict[str, Any]) -> str:
 
 def _generate_section(section_def: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """Generate one section (deterministic or LLM-backed)."""
+    from .html_renderer import markdown_to_html
+
     code = section_def["code"]
     base = {
         "code":   code,
@@ -196,9 +301,13 @@ def generate_report(
     context = load_case_context(case_root)
     analytics = context.get("analytics", {}) or {}
     acra = context.get("acra_profile", {}) or {}
+    case_manifest = context.get("case", {}) or {}
     ent = analytics.get("entity") or {}
     entity_name = (
-        acra.get("entity_name") or ent.get("name") or "the Borrower"
+        acra.get("entity_name")
+        or ent.get("name")
+        or case_manifest.get("company_name")
+        or "the Borrower"
     )
 
     sections_def = SECTIONS_FS_ONLY
@@ -229,6 +338,7 @@ def generate_report(
 
     # Preserve canonical ordering
     sections_ordered = [results[s["code"]] for s in sections_def if s["code"] in results]
+    sections_ordered, _ = normalize_section_numbers(sections_ordered)
     finished_at = datetime.utcnow()
 
     return {
@@ -245,6 +355,8 @@ def generate_report(
 
 def persist_report(case_root: Path, report: Dict[str, Any]) -> Dict[str, Path]:
     """Write the report to disk in both JSON and DOCX formats."""
+    from .docx_writer import write_report_docx
+
     case_root = Path(case_root)
     reports_dir = case_root / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)

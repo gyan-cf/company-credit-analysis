@@ -257,15 +257,6 @@ export default function Intake() {
                 ? 'Re-run extraction'
                 : `Submit ${files.length || ''} file${files.length === 1 ? '' : 's'} for extraction →`}
             </button>
-            {allDone && (
-              <button
-                className="primary"
-                style={{ background: '#065f46' }}
-                onClick={() => navigate(`/cases/${caseId}/review`)}
-              >
-                Review extracted data →
-              </button>
-            )}
             <span className="intake-help">
               {files.length === 0
                 ? 'Upload at least one file to enable extraction.'
@@ -340,7 +331,7 @@ function ExtractionBanner({
           {failedCount > 0 && <span style={{ color: '#991b1b' }}> · {failedCount} failed</span>}
         </div>
         <div className="intake-banner-actions">
-          <button className="primary" onClick={onViewExtracted}>View extracted data →</button>
+          <button className="primary workflow-next-action" onClick={onViewExtracted}>View Data</button>
         </div>
       </div>
     )

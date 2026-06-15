@@ -5,8 +5,23 @@ export interface Case {
   company_name: string;
   status: string;
   progress: number;
+  country?: string;
+  jurisdiction?: string;
+  uen?: string;
+  cin?: string;
+  entity_type?: string;
+  company_status?: string;
+  primary_ssic_code?: string;
+  primary_ssic_desc?: string;
+  currency?: string;
+  facility_type?: string;
+  requested_limit?: string;
+  relationship_manager?: string;
+  priority?: string;
+  onboarding_stage?: string;
   industry_hint?: string;
   created_at?: string;
+  updated_at?: string;
 }
 
 export async function listCases(): Promise<Case[]> {
@@ -19,8 +34,25 @@ export async function createCase(data: {
   company_name: string;
   industry_code?: string;
   industry_hint?: string;
+  country?: string;
+  jurisdiction?: string;
+  uen?: string;
+  entity_type?: string;
+  company_status?: string;
+  incorporation_date?: string;
+  fiscal_year_end?: string;
+  primary_ssic_code?: string;
+  primary_ssic_desc?: string;
+  registered_address?: string;
+  currency?: string;
+  facility_type?: string;
+  requested_limit?: string;
+  relationship_manager?: string;
+  priority?: string;
+  onboarding_stage?: string;
   cin?: string;
   pan?: string;
+  fy_range?: string[];
 }): Promise<Case> {
   const r = await fetch(`${API}/cases`, {
     method: 'POST',
@@ -111,6 +143,15 @@ export interface ExtractionTriggerResponse {
 
 export async function triggerExtraction(caseId: string): Promise<ExtractionTriggerResponse> {
   const r = await fetch(`${API}/cases/${caseId}/extract`, { method: 'POST' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function triggerSourceExtraction(
+  caseId: string,
+  sourceId: string,
+): Promise<ExtractionTriggerResponse & { source_id: string; filename: string }> {
+  const r = await fetch(`${API}/cases/${caseId}/sources/${sourceId}/extract`, { method: 'POST' });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -385,6 +426,53 @@ export async function sendChat(caseId: string, message: string, skill?: string) 
   return r.json();
 }
 
+export type CoworkerEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_result'; id: string; name: string; output: { result?: unknown; citations?: unknown[]; is_error?: boolean; error?: string }; is_error: boolean }
+  | { type: 'done'; text: string; tool_calls: unknown[]; citations: unknown[]; usage: { input_tokens: number; output_tokens: number } }
+  | { type: 'error'; message: string };
+
+export async function streamChat(
+  caseId: string,
+  message: string,
+  onEvent: (event: CoworkerEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const r = await fetch(`${API}/cases/${caseId}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+    signal,
+  });
+  if (!r.ok || !r.body) throw new Error(await r.text().catch(() => `HTTP ${r.status}`));
+
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 2);
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+        if (!dataLine) continue;
+        try {
+          onEvent(JSON.parse(dataLine.slice(5).trim()) as CoworkerEvent);
+        } catch {
+          /* ignore malformed frame */
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function getChatHistory(caseId: string) {
   const r = await fetch(`${API}/cases/${caseId}/chat/history`);
   if (!r.ok) throw new Error(await r.text());
@@ -482,10 +570,15 @@ export interface FinancialAnalytics {
   review_flags: Array<Record<string, any>>;
 }
 
-export async function getFinancialAnalytics(caseId: string): Promise<FinancialAnalytics> {
-  const r = await fetch(`${API}/cases/${caseId}/financials/analytics`);
+export async function getFinancialAnalytics(caseId: string, perimeter?: string): Promise<FinancialAnalytics> {
+  const qs = perimeter ? `?perimeter=${encodeURIComponent(perimeter)}` : '';
+  const r = await fetch(`${API}/cases/${caseId}/financials/analytics${qs}`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+export function analyticsXlsxUrl(caseId: string): string {
+  return `${API}/cases/${caseId}/analytics.xlsx`;
 }
 
 export async function getStatementBlock(

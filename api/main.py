@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from api.models import CaseStatusResponse, ChatRequest, ChatResponse, CreateCaseRequest
 from api.coworker import CoworkerService
@@ -73,7 +74,23 @@ def create_case(req: CreateCaseRequest):
         company_name=req.company_name,
         industry_code=req.industry_code,
         industry_hint=req.industry_hint,
-        cin=req.cin,
+        country=req.country,
+        jurisdiction=req.jurisdiction,
+        uen=req.uen,
+        entity_type=req.entity_type,
+        company_status=req.company_status,
+        incorporation_date=req.incorporation_date,
+        fiscal_year_end=req.fiscal_year_end,
+        primary_ssic_code=req.primary_ssic_code,
+        primary_ssic_desc=req.primary_ssic_desc,
+        registered_address=req.registered_address,
+        currency=req.currency,
+        facility_type=req.facility_type,
+        requested_limit=req.requested_limit,
+        relationship_manager=req.relationship_manager,
+        priority=req.priority,
+        onboarding_stage=req.onboarding_stage,
+        cin=req.cin or req.uen,
         pan=req.pan,
         fy_range=req.fy_range,
     )
@@ -236,6 +253,33 @@ def chat(case_id: str, req: ChatRequest):
 
     result = coworker.chat(case_id, req.message, skill=req.skill)
     return ChatResponse(**result)
+
+
+@app.post("/cases/{case_id}/chat/stream")
+def chat_stream(case_id: str, req: ChatRequest):
+    """
+    Server-Sent Events stream for one co-worker turn.
+
+    Each frame is `data: <json>\\n\\n` carrying one of:
+        {type: "delta",       text}
+        {type: "tool_use",    id, name, input}
+        {type: "tool_result", id, name, output, is_error}
+        {type: "done",        text, tool_calls, citations, usage}
+        {type: "error",       message}
+    """
+    try:
+        store.get_manifest(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Case not found")
+
+    return StreamingResponse(
+        coworker.chat_stream(case_id, req.message),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/cases/{case_id}/chat/history")

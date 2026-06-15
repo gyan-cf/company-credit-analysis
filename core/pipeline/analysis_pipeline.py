@@ -42,7 +42,7 @@ from core.agents.fs_analysis import (
     run_qualitative_agent,
 )
 from core.cases.case_store import CaseStore
-from core.features.fs_analytics import build_fs_agent_data
+from core.features.fs_analytics import build_fs_agent_data, build_fs_agent_data_from_merged
 from core.ingestion.sg_pipeline import SGIngestionPipeline
 from core.knowledge import build_case_wiki
 
@@ -102,7 +102,14 @@ class AnalysisPipeline:
             "ssic": profile.get("primary_ssic_code", ""),
             "industry_hint": manifest.get("industry_hint", "generic"),
         }
-        fs_data = build_fs_agent_data(
+        financials_dir = self.store._case_path(case_id) / "parsed" / "financials"
+        fs_data = build_fs_agent_data_from_merged(
+            financials_dir,
+            perimeter="company",
+            entity=entity,
+            review_flags=review_flags,
+            fallback_periods=periods,
+        ) or build_fs_agent_data(
             periods, perimeter="company", entity=entity, review_flags=review_flags,
         )
         self.store.save_features(case_id, "fs_analytics", fs_data)

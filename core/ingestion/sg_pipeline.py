@@ -123,6 +123,7 @@ class SGIngestionPipeline:
         parsed_root: Optional[Path] = None,
         case_root: Optional[Path] = None,
         on_file_processed: Optional[Any] = None,
+        selected_filenames: Optional[List[str]] = None,
     ) -> IngestionResult:
         """
         Run the pipeline over `root`.
@@ -133,6 +134,10 @@ class SGIngestionPipeline:
 
         `case_root` (defaults to `root`) is used to compute portable relative
         paths for the original PDFs in each manifest.
+
+        `selected_filenames`, when provided, restricts extraction to the named
+        files under `root`. This is used for targeted re-extraction while still
+        keeping original-file paths in the generated manifests.
         """
         root = Path(root)
         case_root = Path(case_root) if case_root else root
@@ -143,6 +148,9 @@ class SGIngestionPipeline:
 
         # 1. Discover & classify
         classified = discover_and_classify(root, expand_zips=False)
+        if selected_filenames:
+            wanted = set(selected_filenames)
+            classified = [c for c in classified if c.path.name in wanted]
         result.classifications = [c.to_dict() for c in classified]
 
         # 2. Expand UFS from zip archives when text-only FS coverage is incomplete

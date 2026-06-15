@@ -26,10 +26,15 @@ import mimetypes
 from pathlib import Path
 from typing import Optional
 
+import io
+from urllib.parse import quote as _urlquote
+
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from core.cases.case_store import CaseStore
+from core.features.fs_analytics import build_fs_agent_data, build_fs_agent_data_from_merged
+from core.report.excel_export import analytics_xlsx_filename, build_analytics_workbook
 
 
 router = APIRouter(tags=["financials"])
@@ -73,12 +78,77 @@ def get_financials_index(case_id: str):
 
 
 @router.get("/cases/{case_id}/financials/analytics")
-def get_financials_analytics(case_id: str):
+def get_financials_analytics(case_id: str, perimeter: Optional[str] = None):
     """Return FS analytics: raw line values, ratios, trends, and review flags."""
-    data = _store.load_features(case_id, "fs_analytics")
+    requested_perimeter = (perimeter or "").strip().lower()
+    case_root = _case_path(case_id)
+    saved = _store.load_features(case_id, "fs_analytics") or {}
+    ingestion = _store.load_parsed(case_id, "sg_ingestion") or {}
+    periods = ingestion.get("periods", []) or []
+    target_perimeter = requested_perimeter or saved.get("perimeter") or "company"
+    manifest = _store.get_manifest(case_id)
+    entity = dict(saved.get("entity") or {})
+    entity.setdefault("name", manifest.get("company_name"))
+    entity["consolidated"] = target_perimeter == "group"
+    review_flags = ingestion.get("review_flags", []) or saved.get("review_flags", []) or []
+
+    data = build_fs_agent_data_from_merged(
+        case_root / "parsed" / "financials",
+        perimeter=target_perimeter,
+        entity=entity,
+        review_flags=review_flags,
+        fallback_periods=periods,
+    )
+    if not data and requested_perimeter and periods:
+        data = build_fs_agent_data(
+            periods,
+            perimeter=requested_perimeter,
+            entity=entity,
+            review_flags=review_flags,
+        )
+    if not data:
+        data = saved
     if not data:
         raise HTTPException(404, "Financial analytics not generated yet — run analysis first")
     return JSONResponse(data)
+
+
+@router.get("/cases/{case_id}/analytics.xlsx")
+def download_analytics_xlsx(case_id: str):
+    """
+    Stream the full financial-analysis workbook (.xlsx).
+
+    Sheets: Summary, Balance Sheet, Income Statement, Cash Flow, Ratios,
+    YoY Trends, Findings, Probes. Generated on every request from the latest
+    on-disk artefacts — no caching, so the analyst gets a fresh export
+    whenever they click download.
+    """
+    try:
+        _store.get_manifest(case_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Case not found")
+
+    try:
+        wb = build_analytics_workbook(case_id, store=_store)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Failed to build workbook: {e}")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = analytics_xlsx_filename(case_id, store=_store)
+    # RFC 5987-safe Content-Disposition for non-ASCII company names.
+    cd = f"attachment; filename=\"{filename}\"; filename*=UTF-8''{_urlquote(filename)}"
+    return StreamingResponse(
+        buf,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": cd},
+    )
 
 
 @router.get("/cases/{case_id}/sources/{source_id}/manifest")

@@ -129,6 +129,12 @@ def get_report(case_id: str):
     report = json.loads(latest.read_text(encoding="utf-8"))
     needs_resave = False
     sections = report.get("sections", []) or []
+    from core.report.generator import normalize_section_numbers
+    sections, renumbered = normalize_section_numbers(sections)
+    if renumbered:
+        report["sections"] = sections
+        report["section_count"] = len(sections)
+        needs_resave = True
     if sections and not sections[0].get("html"):
         from core.report.html_renderer import markdown_to_html
         for s in sections:
@@ -137,6 +143,11 @@ def get_report(case_id: str):
         needs_resave = True
     if needs_resave:
         latest.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    if renumbered:
+        latest_docx = case_root / "reports" / "latest.docx"
+        if latest_docx.exists():
+            from core.report.docx_writer import write_report_docx
+            write_report_docx(report, latest_docx)
     return JSONResponse(report)
 
 
@@ -170,7 +181,7 @@ def regenerate_section(case_id: str, section_code: str, req: RegenerateRequest =
     """
     from core.report.template import SECTIONS_FS_ONLY, build_section_context
     from core.report.llm_caller import call_section_llm
-    from core.report.generator import load_case_context
+    from core.report.generator import load_case_context, normalize_section_numbers
     from core.report.docx_writer import write_report_docx
 
     case_root = _case_root(case_id)
@@ -238,8 +249,11 @@ def regenerate_section(case_id: str, section_code: str, req: RegenerateRequest =
             break
     if not replaced:
         sections.append(new_section)
-        sections.sort(key=lambda s: (s.get("number") or 99))
+    order = {s["code"]: i for i, s in enumerate(SECTIONS_FS_ONLY)}
+    sections.sort(key=lambda s: order.get(s.get("code"), 999))
+    sections, _ = normalize_section_numbers(sections)
     report["sections"] = sections
+    report["section_count"] = len(sections)
     report["last_edit"] = {
         "section": section_code,
         "instruction": req.instruction,

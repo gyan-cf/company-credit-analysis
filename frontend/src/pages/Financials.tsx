@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import {
+  analyticsXlsxUrl,
   getAssessment,
   getFinancialsIndex,
   getFinancialAnalytics,
@@ -9,7 +10,6 @@ import {
   getStatementBlock,
   getNarrativeMarkdown,
   getLinkedNote,
-  reportDocxUrl,
   triggerReportGeneration,
   csvUrl,
   pdfUrl,
@@ -94,6 +94,48 @@ const RATIO_POLICY: Record<string, { pass: number; watch: number; direction: Pol
   inventory_days:     { pass: 60,   watch: 90,   direction: 'below' },
 }
 
+const RAW_LABELS: Record<string, string> = {
+  revenue: 'Revenue',
+  gross_profit: 'Gross profit',
+  ebitda: 'EBITDA',
+  ebit: 'EBIT',
+  pat: 'PAT',
+  cash: 'Cash',
+  inventory: 'Inventory',
+  current_assets: 'Current assets',
+  current_liabilities: 'Current liabilities',
+  total_assets: 'Total assets',
+  total_equity: 'Total equity',
+  total_debt: 'Total debt',
+  trade_receivables: 'Trade receivables',
+  trade_payables: 'Trade payables',
+  cost_of_sales: 'Cost of sales',
+  cfo: 'CFO',
+  fcf: 'FCF',
+  interest_expense: 'Interest expense',
+}
+
+const RATIO_INPUTS: Record<string, string[]> = {
+  gross_margin: ['gross_profit', 'revenue'],
+  ebitda_margin: ['ebitda', 'revenue'],
+  ebit_margin: ['ebit', 'revenue'],
+  pat_margin: ['pat', 'revenue'],
+  return_on_assets: ['pat', 'total_assets'],
+  return_on_equity: ['pat', 'total_equity'],
+  current_ratio: ['current_assets', 'current_liabilities'],
+  quick_ratio: ['current_assets', 'inventory', 'current_liabilities'],
+  cash_ratio: ['cash', 'current_liabilities'],
+  debt_equity: ['total_debt', 'total_equity'],
+  debt_ebitda: ['total_debt', 'ebitda'],
+  interest_coverage: ['ebit', 'interest_expense'],
+  cfo_to_debt: ['cfo', 'total_debt'],
+  fcf_to_debt: ['fcf', 'total_debt'],
+  receivable_days: ['trade_receivables', 'revenue'],
+  payable_days: ['trade_payables', 'cost_of_sales'],
+  inventory_days: ['inventory', 'cost_of_sales'],
+  asset_turnover: ['revenue', 'total_assets'],
+}
+
 function policyStatus(key: string, v: number | null | undefined): PolicyStatus | null {
   const p = RATIO_POLICY[key]
   if (!p || v === null || v === undefined || !Number.isFinite(v)) return null
@@ -136,8 +178,8 @@ function formatCompactValue(v: number | null | undefined, currency: string): str
   if (v === null || v === undefined || Number.isNaN(v)) return '—'
   const abs = Math.abs(v)
   let body = ''
-  if (abs >= 1_000_000) body = `${(abs / 1_000_000).toFixed(2)}M`
-  else if (abs >= 1_000) body = `${(abs / 1_000).toFixed(1)}K`
+  if (abs >= 1_000_000) body = `${(abs / 1_000_000).toFixed(1)}M`
+  else if (abs >= 1_000) body = `${(abs / 1_000).toFixed(0)}K`
   else body = abs.toFixed(0)
   const out = `${currency} ${body}`
   return v < 0 ? `(${out})` : out
@@ -153,6 +195,19 @@ function formatMetric(key: string, v: number | null | undefined, unit: Unit = 'r
     return formatValue(v, unit)
   }
   return `${v.toFixed(2)}x`
+}
+
+function hasValue(v: number | null | undefined): boolean {
+  return v !== null && v !== undefined && Number.isFinite(v)
+}
+
+function ratioMissingReason(rkey: string, analytics: FinancialAnalytics): string {
+  const latestFy = analytics.fys[0]
+  const raw = analytics.by_fy?.[latestFy]?.raw || {}
+  const missing = (RATIO_INPUTS[rkey] || []).filter((k) => !hasValue(raw[k]))
+  if (missing.length === 0) return `Not computed for ${latestFy}.`
+  const labels = missing.map((k) => RAW_LABELS[k] || k).join(', ')
+  return `Missing in ${latestFy}: ${labels}.`
 }
 
 function blockPathForApi(block: FinancialsBlock): string {
@@ -179,16 +234,18 @@ type KpiSpec = {
   label: string
   derive: (raw: Record<string, number | null>) => number | null
   yoyKey?: string
+  better?: 'higher' | 'lower' | 'neutral'
 }
 
 const KPI_SPECS: KpiSpec[] = [
-  { key: 'revenue', label: 'Revenue', derive: (r) => r.revenue ?? null, yoyKey: 'revenue_growth_yoy' },
-  { key: 'ebitda',  label: 'EBITDA',  derive: (r) => r.ebitda  ?? null, yoyKey: 'ebitda_growth_yoy' },
-  { key: 'pat',     label: 'PAT',     derive: (r) => r.pat     ?? null, yoyKey: 'pat_growth_yoy' },
+  { key: 'revenue', label: 'Revenue', derive: (r) => r.revenue ?? null, yoyKey: 'revenue_growth_yoy', better: 'higher' },
+  { key: 'ebitda',  label: 'EBITDA',  derive: (r) => r.ebitda  ?? null, yoyKey: 'ebitda_growth_yoy', better: 'higher' },
+  { key: 'pat',     label: 'PAT',     derive: (r) => r.pat     ?? null, yoyKey: 'pat_growth_yoy', better: 'higher' },
   { key: 'cash',    label: 'Cash',    derive: (r) => r.cash    ?? null },
   {
     key: 'net_debt',
     label: 'Net debt',
+    better: 'lower',
     derive: (r) => {
       const d = (r.short_term_debt ?? 0) + (r.long_term_debt ?? 0)
       const c = r.cash ?? 0
@@ -199,10 +256,13 @@ const KPI_SPECS: KpiSpec[] = [
 ]
 
 function KpiTile({
-  label, latest, yoy, history, currency,
+  label, latest, latestFy, display, displayFy, yoy, history, currency,
 }: {
   label: string
   latest: number | null
+  latestFy: string
+  display: number | null
+  displayFy: string | null
   yoy: number | null | undefined
   history: { fy: string; value: number | null }[]
   currency: string
@@ -216,12 +276,26 @@ function KpiTile({
   const yoyText = yoy === null || yoy === undefined ? '' : `${(yoy * 100).toFixed(1)}% YoY`
   return (
     <div className="kpi-tile">
-      <div className="kpi-label">{label}</div>
-      <div className="kpi-value">{formatCompactValue(latest, currency)}</div>
+      <div className="kpi-label-row">
+        <div className="kpi-label">{label}</div>
+        {displayFy && <span className="kpi-period">{displayFy}</span>}
+      </div>
+      <div className="kpi-value">{formatCompactValue(display, currency)}</div>
+      {latest === null && display !== null && (
+        <div className="kpi-caveat">{latestFy} not captured; showing latest available.</div>
+      )}
       <div className={`kpi-yoy ${yoyClass}`}>
         <span className="kpi-yoy-arrow">{yoyArrow}</span> {yoyText}
       </div>
       <Sparkbar history={history} currency={currency} />
+      <div className="kpi-history">
+        {history.map((h) => (
+          <div key={h.fy} className="kpi-history-cell">
+            <span>{h.fy.replace('FY', "'")}</span>
+            <strong>{h.value === null ? '—' : formatCompactValue(h.value, currency)}</strong>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -255,6 +329,50 @@ function Sparkbar({ history, currency }: { history: { fy: string; value: number 
   )
 }
 
+// Wraps KpiStrip with a collapse toggle so the analyst can hand the vertical
+// real estate back to the spreads/ratios tables. Preference persists per-case
+// in localStorage — different cases can have different states.
+function CollapsibleKpiStrip({
+  caseId, analytics,
+}: { caseId: string | undefined; analytics: FinancialAnalytics | null }) {
+  const storageKey = caseId ? `credisage.kpiCollapsed.${caseId}` : null
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (!storageKey) return false
+    try { return localStorage.getItem(storageKey) === '1' } catch { return false }
+  })
+  useEffect(() => {
+    if (!storageKey) return
+    try { localStorage.setItem(storageKey, collapsed ? '1' : '0') } catch { /* ignore quota errors */ }
+  }, [storageKey, collapsed])
+
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        className="kpi-restore"
+        onClick={() => setCollapsed(false)}
+        title="Show KPI snapshot"
+        aria-label="Show KPI snapshot"
+      >
+        <span className="kpi-restore-label">KPI snapshot</span>
+        <span className="kpi-restore-arrow">▾</span>
+      </button>
+    )
+  }
+  return (
+    <div className="kpi-strip-shell">
+      <button
+        type="button"
+        className="kpi-collapse"
+        onClick={() => setCollapsed(true)}
+        title="Hide KPI snapshot"
+        aria-label="Hide KPI snapshot"
+      >▴</button>
+      <KpiStrip analytics={analytics} />
+    </div>
+  )
+}
+
 function KpiStrip({ analytics }: { analytics: FinancialAnalytics | null }) {
   if (!analytics || !analytics.fys.length) {
     return (
@@ -270,14 +388,18 @@ function KpiStrip({ analytics }: { analytics: FinancialAnalytics | null }) {
   return (
     <div className="kpi-strip">
       {KPI_SPECS.map((spec) => {
-        const value = spec.derive(latest)
         const history = fysSorted.map((fy) => ({ fy, value: spec.derive(analytics.by_fy?.[fy]?.raw || {}) }))
+        const latestAvailable = [...history].reverse().find((h) => hasValue(h.value))
+        const value = spec.derive(latest)
         const yoy = spec.yoyKey ? analytics.trends?.[spec.yoyKey] : null
         return (
           <KpiTile
             key={spec.key}
             label={spec.label}
             latest={value}
+            latestFy={latestFy}
+            display={latestAvailable?.value ?? null}
+            displayFy={latestAvailable?.fy ?? null}
             yoy={yoy}
             history={history}
             currency={currency}
@@ -581,6 +703,21 @@ function SpreadsTab({
   const denomLabel = statement === 'sofp' ? 'Total Assets'
                      : statement === 'soci' ? 'Revenue'
                      : 'Revenue'
+  const spreadStats = useMemo(() => {
+    if (!analysisBlock) return null
+    const dataRows = analysisBlock.rows.filter((r) => r.row_type !== 'section_header')
+    const totalCells = dataRows.length * analysisBlock.fys.length
+    const capturedCells = dataRows.reduce(
+      (sum, row) => sum + analysisBlock.fys.filter((fy) => hasValue(row.values?.[fy])).length,
+      0,
+    )
+    const linkedCells = dataRows.reduce(
+      (sum, row) => sum + analysisBlock.fys.filter((fy) => !!row.provenance?.[fy]?.source_id || !!row.page).length,
+      0,
+    )
+    const missingCells = Math.max(0, totalCells - capturedCells)
+    return { rows: dataRows.length, totalCells, capturedCells, linkedCells, missingCells }
+  }, [analysisBlock])
   return (
     <div className="tab-content">
       <div className="spreads-controls">
@@ -621,6 +758,26 @@ function SpreadsTab({
       {mode === 'common_size' && (
         <div className="spreads-hint">
           Common-size: each line shown as % of <strong>{denomLabel}</strong> for that FY column.
+        </div>
+      )}
+      {spreadStats && (
+        <div className="spread-coverage">
+          <div>
+            <span>Rows captured</span>
+            <strong>{spreadStats.rows}</strong>
+          </div>
+          <div>
+            <span>Numeric cells</span>
+            <strong>{spreadStats.capturedCells} / {spreadStats.totalCells}</strong>
+          </div>
+          <div>
+            <span>Missing cells</span>
+            <strong>{spreadStats.missingCells}</strong>
+          </div>
+          <div>
+            <span>Source-linked cells</span>
+            <strong>{spreadStats.linkedCells}</strong>
+          </div>
         </div>
       )}
       {analysisBlock ? (
@@ -699,6 +856,8 @@ function RatioCard({ rkey, label, analytics }: { rkey: string; label: string; an
   const yoyArrow = yoy === null ? '' : yoy > 0.005 ? '↑' : yoy < -0.005 ? '↓' : '→'
   const yoyClass = yoy === null ? 'kpi-yoy-flat' : yoy > 0.005 ? 'kpi-yoy-up' : yoy < -0.005 ? 'kpi-yoy-down' : 'kpi-yoy-flat'
   const policy = RATIO_POLICY[rkey]
+  const capturedCount = valuesAsc.filter(hasValue).length
+  const latestMissing = !hasValue(latest)
 
   return (
     <div className={`ratio-card ratio-card-${status || 'neutral'}`}>
@@ -711,7 +870,7 @@ function RatioCard({ rkey, label, analytics }: { rkey: string; label: string; an
         )}
       </div>
       <div className="ratio-card-value">
-        {formatMetric(rkey, latest)}
+        {latestMissing ? <span className="ratio-card-missing-value">Not captured</span> : formatMetric(rkey, latest)}
         {yoy !== null && (
           <span className={`ratio-card-yoy ${yoyClass}`}>
             {yoyArrow} {Math.abs(yoy * 100).toFixed(1)}%
@@ -719,10 +878,27 @@ function RatioCard({ rkey, label, analytics }: { rkey: string; label: string; an
         )}
       </div>
       <RatioSparkline values={valuesAsc} statusValues={statusesAsc} />
+      <div className="ratio-value-grid">
+        {fysAsc.map((fy) => {
+          const value = analytics.by_fy?.[fy]?.ratios?.[rkey] ?? null
+          const fyStatus = policyStatus(rkey, value)
+          return (
+            <div key={fy} className={`ratio-value-cell ${fyStatus ? `ratio-value-${fyStatus}` : ''}`}>
+              <span>{fy.replace('FY', "'")}</span>
+              <strong>{hasValue(value) ? formatMetric(rkey, value) : '—'}</strong>
+            </div>
+          )
+        })}
+      </div>
+      {latestMissing && (
+        <div className="ratio-card-note">
+          {capturedCount > 0
+            ? ratioMissingReason(rkey, analytics)
+            : `Inputs not captured: ${(RATIO_INPUTS[rkey] || []).map((k) => RAW_LABELS[k] || k).join(', ') || 'source line items'}.`}
+        </div>
+      )}
       <div className="ratio-card-footer">
-        <span className="ratio-card-fy-bar">
-          {fysAsc.map((fy) => <span key={fy} className="ratio-card-fy">{fy.replace('FY', "'")}</span>)}
-        </span>
+        <span>{capturedCount} / {fysAsc.length} FYs captured</span>
         {policy && <span className="ratio-card-policy">Policy {policyLabel(rkey)}</span>}
       </div>
     </div>
@@ -1097,9 +1273,8 @@ function RiskTab({ analytics, assessment }: { analytics: FinancialAnalytics | nu
 // ---- Report buttons -------------------------------------------------------
 
 function ReportButtons({
-  caseId, analyticsLoaded, status, error, onGenerate,
+  analyticsLoaded, status, error, onGenerate,
 }: {
-  caseId: string
   analyticsLoaded: boolean
   status: ReportStatus | null
   error: string
@@ -1111,9 +1286,9 @@ function ReportButtons({
 
   if (running) {
     return (
-      <div className="report-controls">
-        <button className="primary fin-generate" disabled>
-          Generating report…
+      <div className="report-controls report-controls-next">
+        <button className="primary fin-generate workflow-next-action" disabled>
+          Generating Report
         </button>
         <span className="fin-help">~30–60s · sections fan out in parallel</span>
       </div>
@@ -1121,24 +1296,14 @@ function ReportButtons({
   }
 
   return (
-    <div className="report-controls">
-      {completed && (
-        <a
-          className="primary fin-generate fin-generate-download"
-          href={reportDocxUrl(caseId)}
-          download
-        >
-          ⬇ Download Report (.docx)
-        </a>
-      )}
+    <div className="report-controls report-controls-next">
       <button
-        className="primary fin-generate"
+        className="primary fin-generate workflow-next-action"
         disabled={!analyticsLoaded}
         onClick={onGenerate}
-        title={!analyticsLoaded ? 'Analytics not loaded — run /analyze first' : undefined}
-        style={completed ? { background: '#e2e8f0', color: '#1f3a5f' } : undefined}
+        title={!analyticsLoaded ? 'Analytics not loaded. Run analysis first.' : undefined}
       >
-        {completed ? 'Re-generate' : 'Generate Credit Report'}
+        {completed ? 'Re-generate Report' : 'Generate Report'}
       </button>
       {failed && status?.error && (
         <span className="fin-help" style={{ color: '#991b1b' }}>
@@ -1177,13 +1342,20 @@ export default function Financials() {
     setErr('')
     getFinancialsIndex(caseId).then((idx) => {
       setIndex(idx)
-      const firstMerged = idx.blocks.find((b) => b.source_id === 'merged' && b.statement === 'sofp')
+      const firstMerged = idx.blocks.find((b) => b.source_id === 'merged' && b.statement === 'sofp' && b.perimeter === 'group')
+        || idx.blocks.find((b) => b.source_id === 'merged' && b.statement === 'sofp')
       if (firstMerged?.perimeter) setAnalysisPerimeter(firstMerged.perimeter)
     }).catch((e) => setErr(String(e)))
-    getFinancialAnalytics(caseId).then(setAnalytics).catch(() => setAnalytics(null))
     getAssessment(caseId).then(setAssessment).catch(() => setAssessment(null))
     getReportStatus(caseId).then(setReportStatus).catch(() => setReportStatus(null))
   }, [caseId])
+
+  useEffect(() => {
+    if (!caseId || !analysisPerimeter) return
+    getFinancialAnalytics(caseId, analysisPerimeter).then(setAnalytics).catch(() => {
+      getFinancialAnalytics(caseId).then(setAnalytics).catch(() => setAnalytics(null))
+    })
+  }, [caseId, analysisPerimeter])
 
   // Poll report status while a job is in flight.
   useEffect(() => {
@@ -1282,17 +1454,16 @@ export default function Financials() {
           </p>
         </div>
         <div className="fin-header-controls">
-          <div className="fin-segmented">
-            {(['raw', 'thousand', 'million'] as Unit[]).map((u) => (
-              <button
-                key={u}
-                className={`seg ${unit === u ? 'active' : ''}`}
-                onClick={() => setUnit(u)}
-              >{UNIT_LABELS[u]}</button>
-            ))}
-          </div>
+          {caseId && analytics && (
+            <a
+              className="secondary fin-download-xlsx"
+              href={analyticsXlsxUrl(caseId)}
+              title="Download the full financial analysis as an Excel workbook"
+            >
+              Download Excel
+            </a>
+          )}
           <ReportButtons
-            caseId={caseId!}
             analyticsLoaded={!!analytics}
             status={reportStatus}
             error={reportError}
@@ -1300,8 +1471,19 @@ export default function Financials() {
           />
         </div>
       </div>
+      <div className="fin-toolbar">
+        <div className="fin-segmented">
+          {(['raw', 'thousand', 'million'] as Unit[]).map((u) => (
+            <button
+              key={u}
+              className={`seg ${unit === u ? 'active' : ''}`}
+              onClick={() => setUnit(u)}
+            >{UNIT_LABELS[u]}</button>
+          ))}
+        </div>
+      </div>
 
-      <KpiStrip analytics={analytics} />
+      <CollapsibleKpiStrip caseId={caseId} analytics={analytics} />
 
       <div className="fin-tabs main-tabs">
         {(['spreads', 'ratios', 'cashflow', 'risk'] as Tab[]).map((t) => (
@@ -1344,4 +1526,3 @@ export default function Financials() {
     </div>
   )
 }
-
